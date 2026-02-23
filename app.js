@@ -1256,6 +1256,12 @@
         state.selectedRelId = null;
         selectEntity(ent.id);
       });
+      li.addEventListener('dblclick', () => {
+        state.selectedRelId = null;
+        selectEntity(ent.id);
+        const sheetsTab = document.querySelector('.tab-link[data-tab=\"sheets-view\"]');
+        if (sheetsTab) sheetsTab.click();
+      });
       // Hover popover
       li.addEventListener('mouseenter', e => showSidebarPopover(ent, li));
       li.addEventListener('mouseleave', () => hideSidebarPopover());
