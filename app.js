@@ -1046,6 +1046,17 @@
     return true;
   }
 
+  function deleteRelationship(relId, options = {}) {
+    const camp = currentCampaign();
+    const rel = camp.relationships[relId];
+    if (!rel) return false;
+    const actionLabel = options.actionLabel || 'Deleted relationship';
+    delete camp.relationships[relId];
+    appendLog(actionLabel, relId);
+    if (state.selectedRelId === relId) state.selectedRelId = null;
+    return true;
+  }
+
   async function confirmAndDeleteEntity(entityId, actionLabel) {
     const camp = currentCampaign();
     const ent = camp.entities[entityId];
@@ -1057,6 +1068,18 @@
     if (!ok) return;
     if (deleteEntity(entityId, { actionLabel })) {
       saveAndRefresh();
+    }
+  }
+
+  async function confirmAndDeleteRelationship(relId, actionLabel) {
+    const camp = currentCampaign();
+    if (!camp.relationships[relId]) return;
+    const ok = await askConfirm('Are you sure you want to delete this relationship?', 'Delete Relationship');
+    if (!ok) return;
+    if (deleteRelationship(relId, { actionLabel })) {
+      saveAndRefresh();
+      const inspector = document.getElementById('inspector');
+      if (inspector) inspector.classList.add('hidden');
     }
   }
 
@@ -1453,13 +1476,14 @@
     twoCol.appendChild(leftCol);
     twoCol.appendChild(rightCol);
 
-    // Identity section (spans full width above columns)
+    // Identity section (compact width above columns)
     const identity = document.createElement('div');
-    identity.className = 'inspector-section';
+    identity.className = 'inspector-section pc-identity-section';
     identity.innerHTML = `<h3>Identity</h3>`;
     identity.appendChild(createInputField(pc, 'firstName', 'First name'));
     identity.appendChild(createInputField(pc, 'lastName', 'Last name'));
     identity.appendChild(createInputField(pc, 'pronouns', 'Pronouns (optional)'));
+    identity.appendChild(createPortraitField(pc, 'Character Portrait'));
     // Class dropdown
     const classField = document.createElement('div');
     classField.className = 'inspector-field';
@@ -1515,8 +1539,8 @@
     identity.appendChild(durField);
     container.appendChild(identity);
     container.appendChild(twoCol);
-    // LEFT COLUMN: Stress, Fallout, Resistances, Bonds
-    // RIGHT COLUMN: Skills, Domains, Class Features, Inventory, Tasks, Notes
+    // LEFT COLUMN: Stress, Fallout, Resistances, Bonds, Inventory, Tasks
+    // RIGHT COLUMN: Skills, Domains, Class Features
     // Stress section
     const stressSection = document.createElement('div');
     stressSection.className = 'inspector-section';
@@ -1801,9 +1825,7 @@
     // kit selection, core ability toggles and advances checkboxes.
     const classEff = CLASS_EFFECTS[pc.class];
     if (classEff) {
-      const classSec = document.createElement('div');
-      classSec.className = 'inspector-section';
-      classSec.innerHTML = '<h3>Class Features</h3>';
+      const { sec: classSec, body: classBody } = makeSection('class-features', 'Class Features', null, pc);
       // Refresh condition with toggle
       const refreshDiv = document.createElement('div');
       refreshDiv.className = 'class-refresh' + (pc.refreshed ? ' refreshed' : '');
@@ -1820,7 +1842,7 @@
       });
       refreshDiv.appendChild(refreshLabel);
       refreshDiv.appendChild(refreshChk);
-      classSec.appendChild(refreshDiv);
+      classBody.appendChild(refreshDiv);
       // Bond prompts and responses
       if (classEff.bondPrompts && classEff.bondPrompts.length) {
         classEff.bondPrompts.forEach((prompt, idx) => {
@@ -1837,9 +1859,10 @@
             appendLog('Edited class bond response', pc.id);
             saveAndRefresh();
           });
+          textarea.className = 'class-bond-response';
           promptDiv.appendChild(label);
           promptDiv.appendChild(textarea);
-          classSec.appendChild(promptDiv);
+          classBody.appendChild(promptDiv);
         });
       }
       // Inventory kit selection — checkboxes so players can access all kits
@@ -1933,7 +1956,7 @@
           optDiv.appendChild(wrap);
           invGroup.appendChild(optDiv);
         });
-        classSec.appendChild(invGroup);
+        classBody.appendChild(invGroup);
       }
       // Core abilities toggles
       if (classEff.coreAbilities && classEff.coreAbilities.length) {
@@ -1959,7 +1982,7 @@
           abDiv.appendChild(clabel);
           coreDiv.appendChild(abDiv);
         });
-        classSec.appendChild(coreDiv);
+        classBody.appendChild(coreDiv);
       }
       // Advances checkboxes
       if (classEff.advances) {
@@ -2026,11 +2049,11 @@
         renderAdvList('low', classEff.advances.low, true, true);
         renderAdvList('medium', classEff.advances.medium, medUnlocked, medUnlocked);
         renderAdvList('high', classEff.advances.high, highUnlocked, highUnlocked);
-        classSec.appendChild(advDiv);
+        classBody.appendChild(advDiv);
       }
       rightCol.appendChild(classSec);
     }
-    // Inventory → right col
+    // Inventory → below bonds (left col)
     const { sec: invSecEl, body: invBody } = makeSection('inventory', 'Inventory', 'inventory', pc);
     pc.inventory.forEach(item => invBody.appendChild(createInventoryRow(pc, item)));
     const addItemBtn = document.createElement('button');
@@ -2041,9 +2064,9 @@
       saveAndRefresh();
     });
     invBody.appendChild(addItemBtn);
-    rightCol.appendChild(invSecEl);
+    leftCol.appendChild(invSecEl);
 
-    // Tasks → right col
+    // Tasks → below inventory (left col)
     const { sec: taskSecEl, body: taskBody } = makeSection('tasks', 'Tasks / Quests', 'tasks', pc);
     pc.tasks.forEach(task => taskBody.appendChild(createTaskRow(pc, task)));
     const addTaskBtn = document.createElement('button');
@@ -2054,7 +2077,7 @@
       saveAndRefresh();
     });
     taskBody.appendChild(addTaskBtn);
-    rightCol.appendChild(taskSecEl);
+    leftCol.appendChild(taskSecEl);
 
     // Notes (full-width below columns)
     const notesSec = document.createElement('div');
@@ -2164,6 +2187,7 @@
     identity.innerHTML = '<h3>Identity</h3>';
     identity.appendChild(createInputField(npc, 'name', 'Name'));
     identity.appendChild(createInputField(npc, 'role', 'Role / Archetype'));
+    identity.appendChild(createPortraitField(npc, 'Portrait'));
 
     // Affiliation dropdown
     const affField = document.createElement('div');
@@ -2604,6 +2628,86 @@
       saveAndRefresh();
     });
     wrapper.appendChild(input);
+    return wrapper;
+  }
+
+  /**
+   * Render a portrait frame with local image upload. Images are stored as a
+   * data URL in ent.image so they remain in exported campaign data.
+   */
+  function createPortraitField(ent, labelText = 'Portrait') {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'inspector-field portrait-field';
+    const label = document.createElement('label');
+    label.textContent = labelText;
+    wrapper.appendChild(label);
+
+    const frame = document.createElement('div');
+    frame.className = 'portrait-frame';
+    if (ent.image) {
+      const img = document.createElement('img');
+      img.src = ent.image;
+      img.alt = `${entityLabel(ent)} portrait`;
+      frame.appendChild(img);
+    } else {
+      const empty = document.createElement('div');
+      empty.className = 'portrait-placeholder';
+      empty.textContent = 'Insert Portrait';
+      frame.appendChild(empty);
+    }
+    wrapper.appendChild(frame);
+
+    const controls = document.createElement('div');
+    controls.className = 'portrait-controls';
+    const uploadBtn = document.createElement('button');
+    uploadBtn.type = 'button';
+    uploadBtn.textContent = ent.image ? 'Replace Image' : 'Upload Image';
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.textContent = 'Remove';
+    removeBtn.className = 'row-remove-btn';
+    removeBtn.style.display = ent.image ? '' : 'none';
+
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = 'image/*';
+    fileInput.style.display = 'none';
+
+    const camp = currentCampaign();
+    const isOwnPC = !state.gmMode && ent.type === 'pc' && camp.playerOwnedPcId === ent.id && camp.allowPlayerEditing;
+    const readOnly = (!state.gmMode && !isOwnPC) || (!!ent.pendingApproval && !state.gmMode);
+    if (readOnly) {
+      uploadBtn.disabled = true;
+      removeBtn.disabled = true;
+    }
+
+    uploadBtn.addEventListener('click', () => {
+      if (readOnly) return;
+      fileInput.click();
+    });
+    fileInput.addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        ent.image = evt.target.result;
+        appendLog('Updated portrait', ent.id);
+        saveAndRefresh();
+      };
+      reader.readAsDataURL(file);
+      e.target.value = '';
+    });
+    removeBtn.addEventListener('click', () => {
+      if (readOnly || !ent.image) return;
+      ent.image = '';
+      appendLog('Removed portrait', ent.id);
+      saveAndRefresh();
+    });
+
+    controls.appendChild(uploadBtn);
+    controls.appendChild(removeBtn);
+    controls.appendChild(fileInput);
+    wrapper.appendChild(controls);
     return wrapper;
   }
 
@@ -4252,6 +4356,7 @@
     menu.style.top = (e.clientY) + 'px';
 
     const clickedNode = getNodeAt(mx, my);
+    const clickedEdge = clickedNode ? null : getEdgeAt(mx, my);
 
     if (clickedNode) {
       // Node context: connect from this node
@@ -4275,6 +4380,24 @@
         await confirmAndDeleteEntity(clickedNode.id);
       });
       menu.appendChild(deleteItem);
+    } else if (clickedEdge) {
+      const openEdgeItem = document.createElement('div');
+      openEdgeItem.className = 'ctx-item';
+      openEdgeItem.textContent = '✏️ Edit relationship';
+      openEdgeItem.addEventListener('click', () => {
+        menu.remove();
+        selectRelationship(clickedEdge.id);
+      });
+      menu.appendChild(openEdgeItem);
+
+      const deleteEdgeItem = document.createElement('div');
+      deleteEdgeItem.className = 'ctx-item ctx-item-danger';
+      deleteEdgeItem.textContent = '🗑️ Delete relationship';
+      deleteEdgeItem.addEventListener('click', async () => {
+        menu.remove();
+        await confirmAndDeleteRelationship(clickedEdge.id);
+      });
+      menu.appendChild(deleteEdgeItem);
     } else {
       // Canvas context: create entity at this position
       const dpr = window.devicePixelRatio || 1;
@@ -4550,13 +4673,7 @@
     const deleteBtn = document.createElement('button');
     deleteBtn.textContent = 'Delete Relationship';
     deleteBtn.addEventListener('click', async () => {
-      const ok = await askConfirm('Are you sure you want to delete this relationship?', 'Delete Relationship');
-      if (!ok) return;
-      delete currentCampaign().relationships[rel.id];
-      state.selectedRelId = null;
-      appendLog('Deleted relationship', rel.id);
-      saveAndRefresh();
-      inspector.classList.add('hidden');
+      await confirmAndDeleteRelationship(rel.id);
     });
     actions.appendChild(deleteBtn);
     content.appendChild(actions);
