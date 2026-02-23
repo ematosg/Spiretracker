@@ -111,6 +111,10 @@
             <span class="material-icons tab-icon">history</span>
             <span class="tab-label">Log</span>
           </button>
+          <button class="tab-link" data-tab="messages-view">
+            <span class="material-icons tab-icon">forum</span>
+            <span class="tab-label">Messages</span>
+          </button>
         </div>
         <div class="nav-right">
           <button id="save-btn" class="nav-icon-btn" title="Save (Ctrl+S)"><span class="material-icons">save</span></button>
@@ -287,6 +291,27 @@
             <div id="log-empty" class="log-empty hidden">
               <span class="material-icons">history</span>
               <p>No activity yet.</p>
+            </div>
+          </div>
+
+          <!-- Messages view -->
+          <div id="messages-view" class="tab-page">
+            <div id="messages-toolbar">
+              <div class="messages-title-wrap">
+                <span class="log-title">Table Messages</span>
+                <span id="messages-mode-badge" class="log-session-badge">Party</span>
+              </div>
+              <button id="clear-messages-btn" class="toolbar-btn toolbar-btn-danger" title="Clear Messages">
+                <span class="material-icons">delete</span> Clear
+              </button>
+            </div>
+            <div id="messages-list" class="messages-list"></div>
+            <div id="messages-compose" class="messages-compose">
+              <select id="message-target-select" title="Message target"></select>
+              <input type="text" id="message-input" placeholder="Write a message…" />
+              <button id="send-message-btn" class="toolbar-btn">
+                <span class="material-icons">send</span>
+              </button>
             </div>
           </div>
         </main>

@@ -602,7 +602,8 @@
       entities: {},
       relationships: {},
       positions: {},
-      logs: []
+      logs: [],
+      messages: []
     };
   }
 
@@ -1099,6 +1100,7 @@
     renderSheetView();
     updateGraph();
     renderLog();
+    renderMessages();
     saveCampaigns();
   }
 
@@ -3562,6 +3564,7 @@
     renderEntityLists();
     renderSheetView();
     updateGraph();
+    renderMessages();
     updatePendingBadge();
     updatePlayerPCButtonState();
     updateFocusToggleUI();
@@ -4907,6 +4910,109 @@
     if (empty) empty.classList.toggle('hidden', logList.children.length > 0);
   }
 
+  function messageTargetLabel(target) {
+    if (target === 'party') return 'Party';
+    if (target === 'gm') return 'GM';
+    if (typeof target === 'string' && target.startsWith('user:')) return target.slice(5);
+    return 'Party';
+  }
+
+  function canViewMessage(msg) {
+    if (state.gmMode) return true;
+    const me = state.currentUser || '';
+    const target = msg.target || 'party';
+    if (target === 'party') return true;
+    if (target === 'gm') return msg.fromUser === me;
+    if (target.startsWith('user:')) {
+      const targetUser = target.slice(5);
+      return targetUser === me || msg.fromUser === me;
+    }
+    return false;
+  }
+
+  function messageStyleClass(msg) {
+    const target = msg.target || 'party';
+    if (target === 'party') return 'msg-party';
+    if (target === 'gm') return 'msg-whisper';
+    if (target.startsWith('user:')) return 'msg-whisper';
+    return 'msg-party';
+  }
+
+  function appendMessage(target, text) {
+    const camp = currentCampaign();
+    if (!camp.messages) camp.messages = [];
+    camp.messages.push({
+      id: generateId('msg'),
+      time: new Date().toISOString(),
+      fromUser: state.currentUser || (state.gmMode ? 'GM' : 'Player'),
+      fromRole: state.gmMode ? 'gm' : 'player',
+      target: target || 'party',
+      text: text || ''
+    });
+  }
+
+  function populateMessageTargets() {
+    const sel = document.getElementById('message-target-select');
+    if (!sel) return;
+    const prior = sel.value;
+    sel.innerHTML = '';
+    const addOpt = (value, label) => {
+      const opt = document.createElement('option');
+      opt.value = value;
+      opt.textContent = label;
+      sel.appendChild(opt);
+    };
+    addOpt('party', 'Party');
+    if (!state.gmMode) {
+      addOpt('gm', 'Whisper to GM');
+    } else {
+      const players = Object.entries(state.users || {})
+        .filter(([name, user]) => {
+          if (!name || name === state.currentUser) return false;
+          return user && user.account_type === 'player';
+        })
+        .map(([name]) => name)
+        .sort((a, b) => a.localeCompare(b));
+      players.forEach((name) => addOpt('user:' + name, 'Whisper to ' + name));
+    }
+    sel.value = Array.from(sel.options).some(o => o.value === prior) ? prior : 'party';
+  }
+
+  function renderMessages() {
+    const list = document.getElementById('messages-list');
+    if (!list) return;
+    const camp = currentCampaign();
+    if (!camp.messages) camp.messages = [];
+    const clearBtn = document.getElementById('clear-messages-btn');
+    if (clearBtn) clearBtn.style.display = state.gmMode ? '' : 'none';
+    populateMessageTargets();
+    const modeBadge = document.getElementById('messages-mode-badge');
+    if (modeBadge) modeBadge.textContent = state.gmMode ? 'GM View' : 'Player View';
+    list.innerHTML = '';
+    const visible = camp.messages.filter(canViewMessage);
+    visible.slice().reverse().forEach((msg) => {
+      const row = document.createElement('div');
+      row.className = 'message-row ' + messageStyleClass(msg);
+      const meta = document.createElement('div');
+      meta.className = 'message-meta';
+      const from = msg.fromUser || (msg.fromRole === 'gm' ? 'GM' : 'Player');
+      const toLabel = messageTargetLabel(msg.target || 'party');
+      meta.textContent = `${new Date(msg.time).toLocaleString()} • ${from} → ${toLabel}`;
+      const body = document.createElement('div');
+      body.className = 'message-body';
+      body.textContent = msg.text || '';
+      row.appendChild(meta);
+      row.appendChild(body);
+      list.appendChild(row);
+    });
+    if (!visible.length) {
+      const empty = document.createElement('div');
+      empty.className = 'messages-empty';
+      empty.textContent = 'No messages yet.';
+      list.appendChild(empty);
+    }
+  }
+
   /**
    * Perform a JSON export of the current campaign. If gmExport is
    * false, strip GM-only entities, secret edges and GM notes.
@@ -4932,6 +5038,9 @@
           delete camp.relationships[rid];
         }
       });
+      if (Array.isArray(camp.messages)) {
+        camp.messages = camp.messages.filter(m => (m.target || 'party') === 'party');
+      }
     }
     // Clean positions for removed nodes
     Object.keys(camp.positions).forEach(pid => {
@@ -5983,6 +6092,33 @@
       currentCampaign().logs = [];
       saveAndRefresh();
     });
+    const sendMessageBtn = document.getElementById('send-message-btn');
+    const messageInput = document.getElementById('message-input');
+    const targetSelect = document.getElementById('message-target-select');
+    if (sendMessageBtn && messageInput && targetSelect) {
+      const sendMessage = () => {
+        const text = (messageInput.value || '').trim();
+        if (!text) return;
+        appendMessage(targetSelect.value || 'party', text);
+        messageInput.value = '';
+        saveAndRefresh();
+        renderMessages();
+      };
+      sendMessageBtn.addEventListener('click', sendMessage);
+      messageInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') sendMessage();
+      });
+    }
+    const clearMessagesBtn = document.getElementById('clear-messages-btn');
+    if (clearMessagesBtn) {
+      clearMessagesBtn.addEventListener('click', async () => {
+        const ok = await askConfirm('Clear all table messages?', 'Clear Messages');
+        if (!ok) return;
+        const camp = currentCampaign();
+        camp.messages = [];
+        saveAndRefresh();
+      });
+    }
     // Close inspector
     document.getElementById('close-inspector').addEventListener('click', () => {
       state.selectedRelId = null;
@@ -6019,6 +6155,9 @@
         if (target === 'log-view') {
           renderSessionPrep();
         }
+        if (target === 'messages-view') {
+          renderMessages();
+        }
         // Auto-dismiss inspector when leaving web view
         if (target !== 'web-view') {
           document.getElementById('inspector').classList.add('hidden');
@@ -6052,6 +6191,7 @@
     setupGraph();
     updateGraph();
     renderLog();
+    renderMessages();
     renderSessionPrep();
     updatePendingBadge();
     updatePlayerPCButtonState();
@@ -6074,6 +6214,7 @@
     }
     if (!camp.graphViews) camp.graphViews = {};
     if (!camp.sectionCollapse) camp.sectionCollapse = {};
+    if (!Array.isArray(camp.messages)) camp.messages = [];
   }
 
   /**
@@ -6101,7 +6242,7 @@
     // If player mode is active and web tab is selected, switch to sheets
     if (!state.gmMode) {
       const activeTab = document.querySelector('.tab-link.active');
-      if (activeTab && activeTab.dataset.tab === 'log-view') {
+      if (activeTab && (activeTab.dataset.tab === 'log-view' || activeTab.dataset.tab === 'web-view')) {
         document.querySelector('.tab-link[data-tab="sheets-view"]').click();
       }
       // Hide GM-only web filter bar for players
