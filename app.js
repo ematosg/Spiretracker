@@ -526,8 +526,11 @@
     selectedRelId: null,
     gmMode: true,      // True if GM view, false for player
     darkMode: false,
-    relTypes: DEFAULT_REL_TYPES.slice()
+    relTypes: DEFAULT_REL_TYPES.slice(),
+    users: {},
+    currentUser: null
   };
+  let authMode = 'login';
   const logFilterState = {
     session: 'all',
     query: ''
@@ -844,9 +847,54 @@
    * Load campaigns from localStorage. If none exist, initialise a new
    * default campaign. Returns true if campaigns loaded successfully.
    */
+  function userScopedKey(base) {
+    return state.currentUser ? `${base}:${state.currentUser}` : base;
+  }
+
+  function loadUsers() {
+    try {
+      const raw = localStorage.getItem('spire-users');
+      state.users = raw ? (JSON.parse(raw) || {}) : {};
+      const current = localStorage.getItem('spire-current-user');
+      state.currentUser = (current && state.users[current]) ? current : null;
+      if (!state.currentUser) localStorage.removeItem('spire-current-user');
+      return true;
+    } catch (e) {
+      console.error('Failed to load users', e);
+      state.users = {};
+      state.currentUser = null;
+      return false;
+    }
+  }
+
+  function saveUsers() {
+    try {
+      localStorage.setItem('spire-users', JSON.stringify(state.users));
+      if (state.currentUser) localStorage.setItem('spire-current-user', state.currentUser);
+      else localStorage.removeItem('spire-current-user');
+    } catch (e) {
+      console.warn('Failed to save users', e);
+    }
+  }
+
+  async function hashPassword(password) {
+    const text = String(password || '');
+    if (window.crypto && window.crypto.subtle && window.TextEncoder) {
+      const data = new TextEncoder().encode(text);
+      const digest = await window.crypto.subtle.digest('SHA-256', data);
+      return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+    return btoa(unescape(encodeURIComponent(text)));
+  }
+
   function loadCampaigns() {
     try {
-      const raw = localStorage.getItem('spire-campaigns');
+      if (!state.currentUser) {
+        state.campaigns = {};
+        state.currentCampaignId = null;
+        return true;
+      }
+      const raw = localStorage.getItem(userScopedKey('spire-campaigns'));
       if (raw) {
         const parsed = JSON.parse(raw);
         // Migrate if needed (schemaVersion future use)
@@ -876,15 +924,16 @@
    */
   function saveCampaigns() {
     try {
+      if (!state.currentUser) return;
       const data = {
         campaigns: state.campaigns,
         currentCampaignId: state.currentCampaignId
       };
       const serialized = JSON.stringify(data);
-      localStorage.setItem('spire-campaigns', serialized);
+      localStorage.setItem(userScopedKey('spire-campaigns'), serialized);
       // Keep a rolling backup for quick manual recovery.
-      localStorage.setItem('spire-campaigns-backup', serialized);
-      localStorage.setItem('spire-campaigns-backup-ts', new Date().toISOString());
+      localStorage.setItem(userScopedKey('spire-campaigns-backup'), serialized);
+      localStorage.setItem(userScopedKey('spire-campaigns-backup-ts'), new Date().toISOString());
     } catch (e) {
       console.warn('Save failed', e);
     }
@@ -5265,8 +5314,8 @@
     content.appendChild(relSection);
 
     // Backup restore
-    const backupRaw = localStorage.getItem('spire-campaigns-backup');
-    const backupTs = localStorage.getItem('spire-campaigns-backup-ts');
+    const backupRaw = localStorage.getItem(userScopedKey('spire-campaigns-backup'));
+    const backupTs = localStorage.getItem(userScopedKey('spire-campaigns-backup-ts'));
     if (backupRaw) {
       const backupField = document.createElement('div');
       backupField.className = 'modal-field';
@@ -5618,7 +5667,8 @@
     });
     // Web filter pills
     document.querySelectorAll('#web-filter-bar .filter-pill[data-type]').forEach(pill => {
-      pill.addEventListener('click', () => {
+      pill.addEventListener('click', (e) => {
+        e.preventDefault();
         const type = pill.dataset.type;
         webFilter[type] = !webFilter[type];
         syncWebFilterPills();
@@ -5911,6 +5961,152 @@
   }
 
   /* -----------------------------------------------
+     AUTH SCREEN
+  ----------------------------------------------- */
+
+  function showAuthScreen() {
+    const auth = document.getElementById('auth-screen');
+    const mode = document.getElementById('mode-screen');
+    const main = document.getElementById('main-app');
+    if (auth) auth.style.display = 'flex';
+    if (mode) mode.style.display = 'none';
+    if (main) main.classList.add('hidden');
+  }
+
+  function setAuthMessage(message, isError = false) {
+    const msg = document.getElementById('auth-message');
+    if (!msg) return;
+    msg.textContent = message || '';
+    msg.classList.toggle('error', !!isError);
+  }
+
+  function setAuthMode(mode) {
+    authMode = (mode === 'register') ? 'register' : 'login';
+    const loginTab = document.getElementById('auth-tab-login');
+    const regTab = document.getElementById('auth-tab-register');
+    const confirmWrap = document.getElementById('auth-confirm-wrap');
+    const submitBtn = document.getElementById('auth-submit-btn');
+    const password = document.getElementById('auth-password');
+    if (loginTab) loginTab.classList.toggle('active', authMode === 'login');
+    if (regTab) regTab.classList.toggle('active', authMode === 'register');
+    if (confirmWrap) confirmWrap.classList.toggle('hidden', authMode !== 'register');
+    if (submitBtn) submitBtn.textContent = authMode === 'register' ? 'Create User' : 'Login';
+    if (password) password.autocomplete = authMode === 'register' ? 'new-password' : 'current-password';
+    setAuthMessage('');
+  }
+
+  function updateModeUserRow() {
+    const label = document.getElementById('mode-current-user');
+    if (label) label.textContent = state.currentUser ? `Signed in as ${state.currentUser}` : 'Not signed in';
+  }
+
+  async function handleAuthSubmit() {
+    const userInput = document.getElementById('auth-username');
+    const passInput = document.getElementById('auth-password');
+    const confirmInput = document.getElementById('auth-password-confirm');
+    const username = (userInput ? userInput.value : '').trim();
+    const password = passInput ? passInput.value : '';
+    const confirm = confirmInput ? confirmInput.value : '';
+
+    if (!username) {
+      setAuthMessage('Username is required.', true);
+      return;
+    }
+    if (username.length < 3) {
+      setAuthMessage('Username must be at least 3 characters.', true);
+      return;
+    }
+    if (!password || password.length < 6) {
+      setAuthMessage('Password must be at least 6 characters.', true);
+      return;
+    }
+
+    if (authMode === 'register') {
+      if (password !== confirm) {
+        setAuthMessage('Passwords do not match.', true);
+        return;
+      }
+      if (state.users[username]) {
+        setAuthMessage('That username already exists.', true);
+        return;
+      }
+      state.users[username] = {
+        passwordHash: await hashPassword(password),
+        createdAt: new Date().toISOString()
+      };
+      state.currentUser = username;
+      saveUsers();
+      setAuthMessage('Account created.');
+      enterModeScreenForCurrentUser();
+      return;
+    }
+
+    const existing = state.users[username];
+    if (!existing) {
+      setAuthMessage('Invalid username or password.', true);
+      return;
+    }
+    const enteredHash = await hashPassword(password);
+    if (enteredHash !== existing.passwordHash) {
+      setAuthMessage('Invalid username or password.', true);
+      return;
+    }
+    state.currentUser = username;
+    saveUsers();
+    setAuthMessage('');
+    enterModeScreenForCurrentUser();
+  }
+
+  function setupAuthScreen() {
+    const loginTab = document.getElementById('auth-tab-login');
+    const regTab = document.getElementById('auth-tab-register');
+    const submitBtn = document.getElementById('auth-submit-btn');
+    const inputs = ['auth-username', 'auth-password', 'auth-password-confirm']
+      .map(id => document.getElementById(id))
+      .filter(Boolean);
+
+    if (loginTab) loginTab.addEventListener('click', () => setAuthMode('login'));
+    if (regTab) regTab.addEventListener('click', () => setAuthMode('register'));
+    if (submitBtn) submitBtn.addEventListener('click', () => { void handleAuthSubmit(); });
+    inputs.forEach((input) => {
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') void handleAuthSubmit();
+      });
+    });
+    setAuthMode('login');
+  }
+
+  function logoutCurrentUser() {
+    saveCampaigns();
+    state.currentUser = null;
+    state.campaigns = {};
+    state.currentCampaignId = null;
+    saveUsers();
+    const userInput = document.getElementById('auth-username');
+    const passInput = document.getElementById('auth-password');
+    const confirmInput = document.getElementById('auth-password-confirm');
+    if (userInput) userInput.value = '';
+    if (passInput) passInput.value = '';
+    if (confirmInput) confirmInput.value = '';
+    setAuthMode('login');
+    showAuthScreen();
+  }
+
+  function enterModeScreenForCurrentUser() {
+    loadCampaigns();
+    renderModeScreenCampaigns();
+    updateModeUserRow();
+    const camp = currentCampaign();
+    if (camp) toggleDarkMode(!!camp.darkMode);
+    const auth = document.getElementById('auth-screen');
+    const mode = document.getElementById('mode-screen');
+    const main = document.getElementById('main-app');
+    if (auth) auth.style.display = 'none';
+    if (mode) mode.style.display = 'flex';
+    if (main) main.classList.add('hidden');
+  }
+
+  /* -----------------------------------------------
      MODE SELECTION SCREEN
   ----------------------------------------------- */
 
@@ -5938,6 +6134,11 @@
    * Enter the main app in a given mode (GM or player).
    */
   async function enterApp(gmMode) {
+    if (!state.currentUser) {
+      showToast('Please login first.', 'warn');
+      showAuthScreen();
+      return;
+    }
     const sel = document.getElementById('mode-campaign-select');
     if (sel && sel.value && state.campaigns[sel.value]) {
       state.currentCampaignId = sel.value;
@@ -5954,6 +6155,8 @@
     state.gmMode = gmMode;
     camp.gmMode = gmMode;
     saveCampaigns();
+    const auth = document.getElementById('auth-screen');
+    if (auth) auth.style.display = 'none';
     document.getElementById('mode-screen').style.display = 'none';
     document.getElementById('main-app').classList.remove('hidden');
     initAfterLoad();
@@ -5965,9 +6168,16 @@
    * Return to the mode selection screen.
    */
   function returnToModeScreen() {
+    if (!state.currentUser) {
+      showAuthScreen();
+      return;
+    }
     saveCampaigns();
+    const auth = document.getElementById('auth-screen');
+    if (auth) auth.style.display = 'none';
     document.getElementById('mode-screen').style.display = 'flex';
     document.getElementById('main-app').classList.add('hidden');
+    updateModeUserRow();
     renderModeScreenCampaigns();
   }
 
@@ -5979,6 +6189,12 @@
     document.getElementById('enter-player').addEventListener('click', () => { void enterApp(false); });
 
     document.getElementById('back-to-mode').addEventListener('click', returnToModeScreen);
+    const logoutBtn = document.getElementById('mode-logout-user');
+    if (logoutBtn) {
+      logoutBtn.addEventListener('click', () => {
+        logoutCurrentUser();
+      });
+    }
 
     // Campaign rename on title click
     const titleEl = document.getElementById('campaign-name');
@@ -6053,17 +6269,14 @@
    * Entry point.
    */
   function init() {
-    loadCampaigns();
+    loadUsers();
+    setupAuthScreen();
     setupModeScreen();
-    renderModeScreenCampaigns();
-
-    // Show mode screen initially (main app stays hidden)
-    document.getElementById('mode-screen').style.display = 'flex';
-    document.getElementById('main-app').classList.add('hidden');
-
-    // Apply dark mode from last used campaign
-    const camp = currentCampaign();
-    if (camp && camp.darkMode) toggleDarkMode(true);
+    if (state.currentUser) {
+      enterModeScreenForCurrentUser();
+    } else {
+      showAuthScreen();
+    }
   }
 
   // Start application when DOM is ready

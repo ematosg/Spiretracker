@@ -10,6 +10,35 @@
 </head>
 <body>
   <div id="app">
+    <!-- AUTH SCREEN -->
+    <div id="auth-screen">
+      <div class="mode-screen-bg"></div>
+      <div class="auth-screen-content">
+        <div class="mode-logo">
+          <div class="mode-logo-icon">⬡</div>
+          <h1>Spire</h1>
+          <p>Sign in to continue</p>
+        </div>
+        <div class="auth-card">
+          <div class="auth-tabs">
+            <button id="auth-tab-login" class="auth-tab active">Login</button>
+            <button id="auth-tab-register" class="auth-tab">Create User</button>
+          </div>
+          <div class="auth-fields">
+            <label for="auth-username">Username</label>
+            <input id="auth-username" type="text" autocomplete="username" />
+            <label for="auth-password">Password</label>
+            <input id="auth-password" type="password" autocomplete="current-password" />
+            <div id="auth-confirm-wrap" class="hidden">
+              <label for="auth-password-confirm">Confirm Password</label>
+              <input id="auth-password-confirm" type="password" autocomplete="new-password" />
+            </div>
+          </div>
+          <button id="auth-submit-btn" class="mode-btn mode-btn-gm auth-submit-btn">Login</button>
+          <p id="auth-message" class="auth-message"></p>
+        </div>
+      </div>
+    </div>
 
     <!-- MODE SELECTOR SCREEN -->
     <div id="mode-screen">
@@ -19,6 +48,12 @@
           <div class="mode-logo-icon">⬡</div>
           <h1>Spire</h1>
           <p>Campaign Manager</p>
+        </div>
+        <div class="mode-user-row">
+          <span id="mode-current-user"></span>
+          <button id="mode-logout-user" class="toolbar-btn toolbar-btn-danger">
+            <span class="material-icons">logout</span> Logout
+          </button>
         </div>
         <div class="mode-campaign-selector">
           <label>Campaign</label>
@@ -165,12 +200,12 @@
           <div id="web-view" class="tab-page">
             <div id="web-filter-bar" class="web-filter-bar">
               <span class="filter-label">Show:</span>
-              <label class="filter-pill active" data-type="pc"><input type="checkbox" checked hidden> PCs</label>
-              <label class="filter-pill active" data-type="npc"><input type="checkbox" checked hidden> NPCs</label>
-              <label class="filter-pill active" data-type="org"><input type="checkbox" checked hidden> Orgs</label>
-              <label class="filter-pill active" data-type="secrets"><input type="checkbox" checked hidden> 🔒 Secrets</label>
+              <button type="button" class="filter-pill active" data-type="pc">PCs</button>
+              <button type="button" class="filter-pill active" data-type="npc">NPCs</button>
+              <button type="button" class="filter-pill active" data-type="org">Orgs</button>
+              <button type="button" class="filter-pill active" data-type="secrets">🔒 Secrets</button>
               <span class="filter-sep"></span>
-              <label class="filter-pill active" id="filter-focus-toggle">Focus mode: Off</label>
+              <button type="button" class="filter-pill" id="filter-focus-toggle">Focus mode: Off</button>
             </div>
             <div id="web-legend">
               <span class="legend-item"><span class="legend-dot" style="background:var(--pc-color)"></span>PC</span>

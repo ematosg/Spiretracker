@@ -146,6 +146,105 @@ input, select, textarea { font-family: inherit; }
   z-index: 9999;
 }
 
+#auth-screen {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+}
+
+.auth-screen-content {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  max-width: 480px;
+  padding: 30px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+}
+
+.auth-card {
+  width: 100%;
+  background: rgba(11,11,14,0.92);
+  border: 1px solid var(--spire-border);
+  border-radius: var(--radius-lg);
+  padding: 14px;
+}
+
+.auth-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.auth-tab {
+  flex: 1;
+  background: var(--spire-mid);
+  border: 1px solid var(--spire-border);
+  color: var(--spire-text);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-family: 'Cinzel', serif;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.auth-tab.active {
+  border-color: var(--accent);
+  background: var(--accent-glow);
+  color: var(--accent-hi);
+}
+
+.auth-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.auth-fields label {
+  font-family: 'Cinzel', serif;
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--spire-muted);
+  margin-top: 6px;
+}
+
+.auth-fields input {
+  padding: 9px 10px;
+  background: var(--spire-dark);
+  border: 1px solid var(--spire-border);
+  border-radius: var(--radius);
+  color: var(--spire-text);
+}
+
+.auth-fields input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.auth-submit-btn {
+  width: 100%;
+  margin-top: 12px;
+}
+
+.auth-message {
+  min-height: 18px;
+  margin: 10px 0 0;
+  color: var(--spire-dim);
+  font-size: 0.82rem;
+}
+
+.auth-message.error {
+  color: #dca9a9;
+}
+
 .mode-screen-bg {
   position: absolute;
   inset: 0;
@@ -222,6 +321,23 @@ input, select, textarea { font-family: inherit; }
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.mode-user-row {
+  width: 100%;
+  max-width: 460px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+#mode-current-user {
+  font-family: 'Cinzel', serif;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--spire-muted);
 }
 
 .mode-campaign-selector > label {
@@ -2669,6 +2785,9 @@ body.player-mode .tab-link[data-tab="log-view"] {
   transition: all 0.15s;
   background: transparent;
   user-select: none;
+  appearance: none;
+  -webkit-appearance: none;
+  outline: none;
 }
 .filter-pill.active {
   background: var(--accent-glow);
