@@ -585,6 +585,8 @@
       gmPin: '',
       allowPlayerEditing: true,
       darkMode: false,
+      owner: state.currentUser || null,
+      gmUsers: state.currentUser ? [state.currentUser] : [],
       relTypes: DEFAULT_REL_TYPES.slice(),
       playerOwnedPcId: null,
       currentSession: 1,
@@ -4952,6 +4954,8 @@
       const newId = generateId('camp');
       data.id = newId;
       data.name = data.name || 'Imported Campaign';
+      data.owner = state.currentUser || null;
+      data.gmUsers = state.currentUser ? [state.currentUser] : [];
       state.campaigns[newId] = data;
       state.currentCampaignId = newId;
       saveCampaigns();
@@ -6035,6 +6039,11 @@
    */
   function initAfterLoad() {
     const camp = currentCampaign();
+    if (camp.owner === undefined || camp.owner === null) camp.owner = state.currentUser || null;
+    if (!Array.isArray(camp.gmUsers) || !camp.gmUsers.length) {
+      camp.gmUsers = camp.owner ? [camp.owner] : (state.currentUser ? [state.currentUser] : []);
+    }
+    if (camp.owner && !camp.gmUsers.includes(camp.owner)) camp.gmUsers.unshift(camp.owner);
     renderCampaignName();
     applyModeClasses();
     toggleDarkMode(camp.darkMode);
@@ -6288,6 +6297,20 @@
       state.currentCampaignId = sel.value;
     }
     const camp = currentCampaign();
+    if (camp.owner === undefined || camp.owner === null) camp.owner = state.currentUser || null;
+    if (!Array.isArray(camp.gmUsers) || !camp.gmUsers.length) {
+      camp.gmUsers = camp.owner ? [camp.owner] : (state.currentUser ? [state.currentUser] : []);
+    }
+    if (camp.owner && !camp.gmUsers.includes(camp.owner)) camp.gmUsers.unshift(camp.owner);
+    // Campaign-level GM authorization: only owner/authorized GM users.
+    if (gmMode) {
+      const gmUsers = Array.isArray(camp.gmUsers) ? camp.gmUsers : [];
+      const isAuthorized = state.currentUser && gmUsers.includes(state.currentUser);
+      if (!isAuthorized) {
+        showToast('You are not authorized for GM access in this campaign. Entering as Player.', 'warn');
+        gmMode = false;
+      }
+    }
     // GM PIN check
     if (gmMode && camp.gmPin && camp.gmPin.trim()) {
       const entered = await askPrompt('Enter GM PIN:', '', { title: 'GM Access', type: 'password', submitText: 'Enter' });
@@ -6398,6 +6421,8 @@
           const newId = generateId('camp');
           data.id = newId;
           data.name = data.name || 'Imported Campaign';
+          data.owner = state.currentUser || null;
+          data.gmUsers = state.currentUser ? [state.currentUser] : [];
           state.campaigns[newId] = data;
           state.currentCampaignId = newId;
           saveCampaigns();
