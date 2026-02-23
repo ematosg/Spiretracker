@@ -3914,8 +3914,8 @@
     drawGraph();
   }
 
-  // Edge type → color mapping for the conspiracy web
-  const EDGE_COLORS = {
+  // Edge type → color mapping for the conspiracy web (light theme)
+  const EDGE_COLORS_LIGHT = {
     'Ally':             '#4caf50',
     'Enemy':            '#e53935',
     'Rival':            '#ff8f00',
@@ -3933,8 +3933,39 @@
     'Unknown/Unclear':  '#78909c'
   };
 
+  // Dark-theme variants with brighter contrast for readability.
+  const EDGE_COLORS_DARK = {
+    'Ally':             '#66d47a',
+    'Enemy':            '#ff6b6b',
+    'Rival':            '#ffb74d',
+    'Romantic':         '#ff66b2',
+    'Family':           '#c792ea',
+    'Blackmail':        '#ff5252',
+    'Targeting':        '#ff8a80',
+    'Surveillance':     '#90a4ae',
+    'Informant':        '#4fc3f7',
+    'Handler':          '#64b5f6',
+    'Patron/Client':    '#bcaaa4',
+    'Employer/Employee':'#a1887f',
+    'Member Of':        '#aed581',
+    'Owes / Debt':      '#ffd54f',
+    'Unknown/Unclear':  '#b0bec5'
+  };
+
   function edgeColor(type) {
-    return EDGE_COLORS[type] || '#888888';
+    const isDark = document.body.classList.contains('dark');
+    const palette = isDark ? EDGE_COLORS_DARK : EDGE_COLORS_LIGHT;
+    return palette[type] || (isDark ? '#b0bec5' : '#888888');
+  }
+
+  function edgeDashForType(type) {
+    if (type === 'Enemy' || type === 'Rival' || type === 'Targeting') {
+      return [8 / graphState.scale, 4 / graphState.scale];
+    }
+    if (type === 'Surveillance') {
+      return [2 / graphState.scale, 6 / graphState.scale];
+    }
+    return [];
   }
 
   /** Draw the conspiracy web on the canvas. */
@@ -3966,17 +3997,12 @@
       const isSelected = state.selectedRelId === edge.id;
       const color = edgeColor(edge.type);
       const focusEdge = !focusNodeId || edge.source.id === focusNodeId || edge.target.id === focusNodeId;
-      ctx.strokeStyle = isSelected ? '#fff' : (edge.secret ? '#666' : color);
+      ctx.strokeStyle = isSelected ? '#fff' : color;
       ctx.lineWidth = (isSelected ? 3 : 2) / graphState.scale;
-      // Dash pattern: secret=sparse dots, Enemy=dash, Surveillance=dense dot
-      if (edge.secret) ctx.setLineDash([3 / graphState.scale, 7 / graphState.scale]);
-      else if (edge.type === 'Enemy' || edge.type === 'Rival' || edge.type === 'Targeting')
-        ctx.setLineDash([8 / graphState.scale, 4 / graphState.scale]);
-      else if (edge.type === 'Surveillance')
-        ctx.setLineDash([2 / graphState.scale, 6 / graphState.scale]);
-      else ctx.setLineDash([]);
+      ctx.setLineDash(edgeDashForType(edge.type));
       if (focusNodeId) ctx.globalAlpha = isSelected ? 1 : (focusEdge ? 0.9 : 0.12);
       else ctx.globalAlpha = isSelected ? 1 : 0.75;
+      if (edge.secret && !isSelected) ctx.globalAlpha *= 0.65;
       ctx.beginPath();
       ctx.moveTo(x1, y1);
       ctx.lineTo(x2, y2);
@@ -3987,7 +4013,8 @@
       // Edge label at midpoint
       const mx = (x1 + x2) / 2;
       const my = (y1 + y2) / 2;
-      drawEdgeLabel(ctx, edge.type, mx, my, isSelected ? '#fff' : color, focusNodeId && !focusEdge ? 0.18 : 1);
+      const edgeLabel = edge.secret ? `🔒 ${edge.type}` : edge.type;
+      drawEdgeLabel(ctx, edgeLabel, mx, my, isSelected ? '#fff' : color, focusNodeId && !focusEdge ? 0.18 : 1);
     });
 
     // Draw nodes

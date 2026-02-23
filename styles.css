@@ -126,6 +126,24 @@ h1, h2, h3, h4 {
 
 button { font-family: inherit; cursor: pointer; }
 input, select, textarea { font-family: inherit; }
+input, select, textarea, input::placeholder, textarea::placeholder { color: inherit; }
+
+/* Keep form text legible when toggling dark mode (including autofill). */
+body.dark input,
+body.dark select,
+body.dark textarea {
+  color: var(--spire-text);
+}
+body.dark input::placeholder,
+body.dark textarea::placeholder {
+  color: var(--spire-dim);
+}
+body.dark input:-webkit-autofill,
+body.dark input:-webkit-autofill:hover,
+body.dark input:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--spire-text);
+  -webkit-box-shadow: 0 0 0 1000px var(--spire-dark) inset;
+}
 
 /* Scrollbar styling */
 ::-webkit-scrollbar { width: 6px; }
