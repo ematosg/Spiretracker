@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  <title>Spire Campaign Manager</title>
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300;1,400&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css?v=6">
+</head>
+<body>
+  <div id="app">
+
+    <!-- MODE SELECTOR SCREEN -->
+    <div id="mode-screen">
+      <div class="mode-screen-bg"></div>
+      <div class="mode-screen-content">
+        <div class="mode-logo">
+          <div class="mode-logo-icon">⬡</div>
+          <h1>Spire</h1>
+          <p>Campaign Manager</p>
+        </div>
+        <div class="mode-campaign-selector">
+          <label>Campaign</label>
+          <div class="mode-campaign-row">
+            <select id="mode-campaign-select"></select>
+            <button id="mode-new-campaign" title="New Campaign"><span class="material-icons">add</span></button>
+            <button id="mode-import-btn" title="Import Campaign"><span class="material-icons">file_download</span></button>
+            <button id="mode-delete-campaign" title="Delete Campaign" class="mode-delete-btn"><span class="material-icons">delete</span></button>
+            <input type="file" id="mode-import-input" accept="application/json" style="display:none">
+          </div>
+        </div>
+        <div class="mode-buttons">
+          <button class="mode-btn mode-btn-gm" id="enter-gm">
+            <span class="mode-btn-icon"><span class="material-icons">shield</span></span>
+            <span class="mode-btn-label">Game Master</span>
+            <span class="mode-btn-desc">Full access. Manage secrets, NPCs &amp; the conspiracy web.</span>
+          </button>
+          <button class="mode-btn mode-btn-player" id="enter-player">
+            <span class="mode-btn-icon"><span class="material-icons">person</span></span>
+            <span class="mode-btn-label">Player</span>
+            <span class="mode-btn-desc">View your character sheet and known connections.</span>
+          </button>
+        </div>
+        <div class="mode-footer">
+          <span>Data saved locally in your browser</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- MAIN APPLICATION -->
+    <div id="main-app" class="hidden">
+      <!-- Top navigation bar -->
+      <header id="top-nav">
+        <div class="nav-left">
+          <button id="back-to-mode" class="nav-icon-btn" title="Back to mode selection">
+            <span class="material-icons">arrow_back</span>
+          </button>
+          <div class="nav-brand">
+            <span class="nav-brand-icon">⬡</span>
+            <span id="campaign-name" class="nav-title">Untitled Campaign</span>
+          </div>
+          <div id="mode-badge" class="mode-badge mode-badge-gm">GM</div>
+          <div id="pending-badge" class="pending-count-badge hidden" title="Pending NPC approvals"></div>
+        </div>
+        <div class="nav-middle">
+          <button class="tab-link active" data-tab="sheets-view">
+            <span class="material-icons tab-icon">description</span>
+            <span class="tab-label">Sheets</span>
+          </button>
+          <button class="tab-link" data-tab="web-view">
+            <span class="material-icons tab-icon">hub</span>
+            <span class="tab-label">Web</span>
+          </button>
+          <button class="tab-link" data-tab="log-view">
+            <span class="material-icons tab-icon">history</span>
+            <span class="tab-label">Log</span>
+          </button>
+        </div>
+        <div class="nav-right">
+          <button id="save-btn" class="nav-icon-btn" title="Save (Ctrl+S)"><span class="material-icons">save</span></button>
+          <button id="dark-mode-btn" class="nav-icon-btn" title="Toggle dark mode"><span class="material-icons">dark_mode</span></button>
+          <button id="export-btn" class="nav-icon-btn" title="Export"><span class="material-icons">file_upload</span></button>
+          <input type="file" id="import-input" accept="application/json" style="display:none">
+          <button id="import-btn" class="nav-icon-btn" title="Import"><span class="material-icons">file_download</span></button>
+          <button id="dice-btn" class="nav-icon-btn" title="Dice roller"><span class="material-icons">casino</span></button>
+          <button id="settings-btn" class="nav-icon-btn" title="Settings"><span class="material-icons">settings</span></button>
+        </div>
+      </header>
+
+      <!-- Main layout -->
+      <div id="layout">
+        <!-- Sidebar -->
+        <aside id="sidebar">
+          <div class="sidebar-header">
+            <div class="search-wrap">
+              <span class="material-icons search-icon">search</span>
+              <input type="text" id="search-input" placeholder="Search entities…" title="Search (/)"/>
+            </div>
+            <div id="gm-add-buttons" class="add-buttons">
+              <button id="add-pc-btn" class="add-btn add-btn-pc" title="Add PC">
+                <span class="material-icons">person_add</span>
+                <span>PC</span>
+              </button>
+              <button id="add-npc-btn" class="add-btn add-btn-npc" title="Add NPC">
+                <span class="material-icons">people</span>
+                <span>NPC</span>
+              </button>
+              <button id="add-org-btn" class="add-btn add-btn-org" title="Add Organisation">
+                <span class="material-icons">business</span>
+                <span>Org</span>
+              </button>
+            </div>
+            <div id="player-add-buttons" class="add-buttons">
+              <button id="player-add-pc-btn" class="add-btn add-btn-pc" title="Create my character">
+                <span class="material-icons">person_add</span>
+                <span>My Character</span>
+              </button>
+              <button id="player-submit-npc-btn" class="add-btn add-btn-npc" title="Submit an NPC for GM approval">
+                <span class="material-icons">person_add</span>
+                <span>Submit NPC</span>
+              </button>
+            </div>
+          </div>
+          <div class="entity-lists">
+            <details open>
+              <summary>
+                <span class="material-icons summary-icon">person</span>
+                Player Characters
+                <span id="pc-count" class="entity-count">0</span>
+              </summary>
+              <ul id="pc-list" class="entity-list"></ul>
+            </details>
+            <details open>
+              <summary>
+                <span class="material-icons summary-icon">people</span>
+                NPCs
+                <span id="npc-count" class="entity-count">0</span>
+              </summary>
+              <ul id="npc-list" class="entity-list"></ul>
+            </details>
+            <details open>
+              <summary>
+                <span class="material-icons summary-icon">business</span>
+                Organisations
+                <span id="org-count" class="entity-count">0</span>
+              </summary>
+              <ul id="org-list" class="entity-list"></ul>
+            </details>
+          </div>
+        </aside>
+
+        <!-- Main content area -->
+        <main id="main-content">
+          <!-- Sheets view -->
+          <div id="sheets-view" class="tab-page active">
+            <div id="sheet-placeholder" class="placeholder">
+              <span class="material-icons placeholder-icon">description</span>
+              <p>Select an entity from the sidebar to view its sheet.</p>
+            </div>
+            <div id="sheet-container" class="sheet-container" style="display:none"></div>
+          </div>
+
+          <!-- Conspiracy web view -->
+          <div id="web-view" class="tab-page">
+            <div id="web-filter-bar" class="web-filter-bar">
+              <span class="filter-label">Show:</span>
+              <label class="filter-pill active" data-type="pc"><input type="checkbox" checked hidden> PCs</label>
+              <label class="filter-pill active" data-type="npc"><input type="checkbox" checked hidden> NPCs</label>
+              <label class="filter-pill active" data-type="org"><input type="checkbox" checked hidden> Orgs</label>
+              <label class="filter-pill active" data-type="secrets"><input type="checkbox" checked hidden> 🔒 Secrets</label>
+              <span class="filter-sep"></span>
+              <label class="filter-pill active" id="filter-focus-toggle">Focus mode: Off</label>
+            </div>
+            <div id="web-legend">
+              <span class="legend-item"><span class="legend-dot" style="background:var(--pc-color)"></span>PC</span>
+              <span class="legend-item"><span class="legend-dot" style="background:var(--npc-color);border-radius:3px"></span>NPC</span>
+              <span class="legend-item"><span class="legend-dot" style="background:var(--org-color);clip-path:polygon(50% 0%,93% 25%,93% 75%,50% 100%,7% 75%,7% 25%)"></span>Org</span>
+              <span class="legend-item"><span class="legend-swatch" style="background:#4caf50"></span>Ally</span>
+              <span class="legend-item"><span class="legend-swatch" style="background:#e53935"></span>Enemy</span>
+              <span class="legend-item"><span class="legend-swatch" style="background:#ff8f00"></span>Rival</span>
+              <span class="legend-item"><span class="legend-swatch" style="background:#e91e8c"></span>Romantic</span>
+              <span class="legend-item"><span class="legend-swatch" style="background:#0288d1"></span>Informant</span>
+              <span class="legend-item"><span class="legend-swatch" style="background:#c62828"></span>Blackmail</span>
+              <span class="legend-item"><span class="legend-swatch" style="background:#546e7a;border-top:2px dotted #546e7a;height:0"></span>Secret</span>
+              <span style="margin-left:auto;color:var(--spire-dim);font-size:0.65rem">Double-click node → open sheet</span>
+            </div>
+            <div id="web-toolbar">
+              <div class="web-toolbar-left">
+                <button id="add-rel-btn" class="toolbar-btn" title="Add Relationship">
+                  <span class="material-icons">link</span> Relationship
+                </button>
+                <button id="layout-btn" class="toolbar-btn" title="Auto layout">
+                  <span class="material-icons">autorenew</span> Layout
+                </button>
+                <button id="export-png-btn" class="toolbar-btn" title="Export PNG">
+                  <span class="material-icons">image</span> Export
+                </button>
+              </div>
+              <div class="web-toolbar-right">
+                <select id="node-select" title="Jump to entity">
+                  <option value="">Jump to entity…</option>
+                </select>
+              </div>
+            </div>
+            <div id="cy-container">
+              <canvas id="graph-canvas"></canvas>
+              <div id="graph-empty" class="graph-empty hidden">
+                <span class="material-icons">hub</span>
+                <p>Add entities and relationships to build your conspiracy web.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Log view -->
+          <div id="log-view" class="tab-page">
+            <div id="log-toolbar">
+              <div class="log-toolbar-left">
+                <span class="log-title">Activity Log</span>
+                <span id="log-session-badge" class="log-session-badge">Session 1</span>
+              </div>
+              <div class="log-toolbar-right">
+                <button id="new-session-btn" class="toolbar-btn" title="Start new session (resets core abilities)">
+                  <span class="material-icons">play_circle</span> New Session
+                </button>
+                <button id="clear-log-btn" class="toolbar-btn toolbar-btn-danger" title="Clear Log">
+                  <span class="material-icons">delete</span> Clear
+                </button>
+              </div>
+            </div>
+            <div id="log-note-bar">
+              <input type="text" id="log-note-input" placeholder="Add a session note…" />
+              <button id="log-note-btn" class="toolbar-btn"><span class="material-icons">add</span></button>
+            </div>
+            <div id="log-layout">
+              <div id="session-prep-panel" class="session-prep-panel"></div>
+              <ul id="log-list" class="log-list"></ul>
+            </div>
+            <div id="log-empty" class="log-empty hidden">
+              <span class="material-icons">history</span>
+              <p>No activity yet.</p>
+            </div>
+          </div>
+        </main>
+
+        <!-- Inspector panel -->
+        <aside id="inspector" class="inspector hidden">
+          <div class="inspector-header">
+            <span class="inspector-title">Details</span>
+            <button id="close-inspector" class="close-inspector" title="Close">
+              <span class="material-icons">close</span>
+            </button>
+          </div>
+          <div id="inspector-content"></div>
+        </aside>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hidden gm-toggle for JS compatibility -->
+  <input type="checkbox" id="gm-toggle" style="display:none">
+
+  <!-- Modal -->
+  <div id="modal-overlay" class="hidden"></div>
+  <div id="modal" class="modal hidden">
+    <div class="modal-header">
+      <span id="modal-title" class="modal-title"></span>
+      <button id="close-modal" class="close-modal"><span class="material-icons">close</span></button>
+    </div>
+    <div id="modal-content"></div>
+  </div>
+
+  <script src="app.js?v=6"></script>
+</body>
+</html>
