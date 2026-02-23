@@ -2373,6 +2373,10 @@ body.player-mode .tab-link[data-tab="log-view"] {
 .pc-identity-section {
   width: min(52%, 620px);
 }
+.sheet-col .pc-identity-section {
+  width: 100%;
+  max-width: none;
+}
 .sheet-col {
   min-width: 0;
 }

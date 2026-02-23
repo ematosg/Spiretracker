@@ -1537,8 +1537,8 @@
     durField.appendChild(durLabel);
     durField.appendChild(durSelect);
     identity.appendChild(durField);
-    container.appendChild(identity);
     container.appendChild(twoCol);
+    leftCol.appendChild(identity);
     // LEFT COLUMN: Stress, Fallout, Bonds, Inventory, Tasks
     // RIGHT COLUMN: Skills, Domains, Resistances, Class Features
     // Stress section
