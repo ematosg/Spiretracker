@@ -955,6 +955,11 @@ details[open] summary { color: var(--accent-hi); }
   margin: 0;
   color: var(--spire-text);
 }
+.sheet-class-suffix {
+  font-size: 0.86em;
+  color: var(--spire-muted);
+  font-weight: 400;
+}
 
 .sheet-title .sheet-type-badge {
   font-family: 'Cinzel', serif;

@@ -1436,7 +1436,9 @@
     // Title row: name + action buttons
     const title = document.createElement('div');
     title.className = 'sheet-title';
-    title.innerHTML = `<h2>${escapeHtml(entityLabel(pc))}</h2>`;
+    const name = escapeHtml(entityLabel(pc));
+    const classSuffix = pc.class ? ` <span class="sheet-class-suffix">— ${escapeHtml(pc.class)}</span>` : '';
+    title.innerHTML = `<h2>${name}${classSuffix}</h2>`;
     const titleBtns = document.createElement('div');
     titleBtns.style.display = 'flex';
     titleBtns.style.gap = '6px';
@@ -1835,7 +1837,8 @@
     // kit selection, core ability toggles and advances checkboxes.
     const classEff = CLASS_EFFECTS[pc.class];
     if (classEff) {
-      const { sec: classSec, body: classBody } = makeSection('class-features', 'Class Features', null, pc);
+      const classTitle = pc.class ? `Class Features — ${pc.class}` : 'Class Features';
+      const { sec: classSec, body: classBody } = makeSection('class-features', classTitle, null, pc);
       // Refresh condition with toggle
       const refreshDiv = document.createElement('div');
       refreshDiv.className = 'class-refresh' + (pc.refreshed ? ' refreshed' : '');
