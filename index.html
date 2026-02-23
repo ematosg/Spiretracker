@@ -198,6 +198,15 @@
                 </button>
               </div>
               <div class="web-toolbar-right">
+                <select id="graph-view-select" title="Saved graph view">
+                  <option value="">View preset…</option>
+                </select>
+                <button id="save-graph-view-btn" class="toolbar-btn" title="Save current graph view">
+                  <span class="material-icons">bookmark_add</span> Save View
+                </button>
+                <button id="delete-graph-view-btn" class="toolbar-btn toolbar-btn-danger" title="Delete selected graph view">
+                  <span class="material-icons">bookmark_remove</span> Delete View
+                </button>
                 <select id="node-select" title="Jump to entity">
                   <option value="">Jump to entity…</option>
                 </select>
@@ -220,6 +229,10 @@
                 <span id="log-session-badge" class="log-session-badge">Session 1</span>
               </div>
               <div class="log-toolbar-right">
+                <input type="text" id="log-search-input" placeholder="Search log…" />
+                <select id="log-session-filter" title="Filter by session">
+                  <option value="all">All sessions</option>
+                </select>
                 <button id="new-session-btn" class="toolbar-btn" title="Start new session (resets core abilities)">
                   <span class="material-icons">play_circle</span> New Session
                 </button>
@@ -270,6 +283,7 @@
     <div id="modal-content"></div>
   </div>
 
+  <script src="rules-engine.js?v=1"></script>
   <script src="app.js?v=6"></script>
 </body>
 </html>

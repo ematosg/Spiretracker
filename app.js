@@ -528,7 +528,35 @@
     darkMode: false,
     relTypes: DEFAULT_REL_TYPES.slice()
   };
+  const logFilterState = {
+    session: 'all',
+    query: ''
+  };
   let eventListenersBound = false;
+  const RulesEngine = (typeof window !== 'undefined' && window.SpireRulesEngine) ? window.SpireRulesEngine : {
+    getRulesConfig(camp) {
+      const defaults = { difficultyDowngrades: true, falloutCheckOnStress: true, clearStressOnFallout: true };
+      if (!camp) return defaults;
+      const profile = camp.rulesProfile || 'Core';
+      if (profile === 'Quickstart') return { difficultyDowngrades: true, falloutCheckOnStress: false, clearStressOnFallout: false };
+      if (profile === 'Custom') return Object.assign({}, defaults, camp.customRules || {});
+      return defaults;
+    },
+    totalStressForFallout(pc) {
+      const tracks = ['blood', 'mind', 'silver', 'shadow', 'reputation'];
+      return tracks.reduce((sum, t) => sum + Math.min(10, ((pc.stressFilled && pc.stressFilled[t]) ? pc.stressFilled[t].length : 0)), 0);
+    },
+    falloutSeverityForTotalStress(total) {
+      if (total >= 9) return 'Severe';
+      if (total >= 5) return 'Moderate';
+      return 'Minor';
+    },
+    stressClearAmountForSeverity(sev) {
+      if (sev === 'Severe') return 7;
+      if (sev === 'Moderate') return 5;
+      return 3;
+    }
+  };
 
   /**
    * Generate a unique ID. Combines a prefix with a timestamp and random
@@ -564,6 +592,7 @@
         falloutCheckOnStress: true,
         clearStressOnFallout: true
       },
+      graphViews: {},
       sectionCollapse: {},    // persistent collapse state per entity+section
       entities: {},
       relationships: {},
@@ -869,24 +898,7 @@
   }
 
   function getRulesConfig(camp = currentCampaign()) {
-    const defaults = {
-      difficultyDowngrades: true,
-      falloutCheckOnStress: true,
-      clearStressOnFallout: true
-    };
-    if (!camp) return defaults;
-    const profile = camp.rulesProfile || 'Core';
-    if (profile === 'Quickstart') {
-      return {
-        difficultyDowngrades: true,
-        falloutCheckOnStress: false,
-        clearStressOnFallout: false
-      };
-    }
-    if (profile === 'Custom') {
-      return Object.assign({}, defaults, camp.customRules || {});
-    }
-    return defaults;
+    return RulesEngine.getRulesConfig(camp);
   }
 
   /**
@@ -897,15 +909,42 @@
   const LOG_STRESS_PREFIXES = ['Set blood stress', 'Set mind stress', 'Set silver stress',
     'Set shadow stress', 'Set reputation stress', 'Set bond stress'];
 
+  function formatRelationshipLabel(camp, rel) {
+    if (!rel) return '';
+    const source = camp.entities[rel.source];
+    const target = camp.entities[rel.target];
+    const sourceLabel = source ? entityLabel(source) : 'Unknown';
+    const targetLabel = target ? entityLabel(target) : 'Unknown';
+    const relType = rel.type || 'Relationship';
+    return `${sourceLabel} ${relType} ${targetLabel}`;
+  }
+
+  function describeLogTarget(camp, targetId) {
+    if (!targetId) return '';
+    const ent = camp.entities[targetId];
+    if (ent) return entityLabel(ent);
+    const rel = camp.relationships[targetId];
+    if (rel) return formatRelationshipLabel(camp, rel);
+    return '';
+  }
+
+  function resolveLogTargetLabel(camp, entry) {
+    if (!entry || !entry.target) return '';
+    const live = describeLogTarget(camp, entry.target);
+    return live || entry.targetLabel || '';
+  }
+
   function appendLog(action, entityOrRelId, type = 'action') {
     for (const prefix of LOG_STRESS_PREFIXES) {
       if (action.startsWith(prefix)) return;
     }
     const camp = currentCampaign();
+    const targetLabel = describeLogTarget(camp, entityOrRelId);
     camp.logs.push({
       time: new Date().toISOString(),
       action,
       target: entityOrRelId,
+      targetLabel,
       type,
       session: camp.currentSession || 1
     });
@@ -920,6 +959,56 @@
       type: 'session',
       session: camp.currentSession || 1
     });
+  }
+
+  function deleteEntity(entityId, options = {}) {
+    const camp = currentCampaign();
+    const ent = camp.entities[entityId];
+    if (!ent) return false;
+
+    const actionLabel = options.actionLabel || ('Deleted ' + ent.type.toUpperCase());
+    appendLog(actionLabel, entityId);
+
+    // Remove relationships that touch this entity.
+    Object.keys(camp.relationships).forEach((rid) => {
+      const rel = camp.relationships[rid];
+      if (rel.source === entityId || rel.target === entityId) {
+        delete camp.relationships[rid];
+      }
+    });
+
+    // Remove references from all entities.
+    Object.values(camp.entities).forEach((other) => {
+      if (other.id === entityId) return;
+      if (Array.isArray(other.members)) {
+        other.members = other.members.filter(id => id !== entityId);
+      }
+      if (other.affiliation === entityId) {
+        other.affiliation = '';
+      }
+    });
+
+    delete camp.entities[entityId];
+    delete camp.positions[entityId];
+    if (camp.playerOwnedPcId === entityId) camp.playerOwnedPcId = null;
+    if (state.selectedEntityId === entityId) state.selectedEntityId = null;
+    if (graphSelectedNodeId === entityId) graphSelectedNodeId = null;
+    if (state.selectedRelId && !camp.relationships[state.selectedRelId]) state.selectedRelId = null;
+    return true;
+  }
+
+  async function confirmAndDeleteEntity(entityId, actionLabel) {
+    const camp = currentCampaign();
+    const ent = camp.entities[entityId];
+    if (!ent) return;
+    const ok = await askConfirm(
+      `Delete ${ent.type.toUpperCase()} "${entityLabel(ent)}"? This also removes linked relationships.`,
+      'Delete Entity'
+    );
+    if (!ok) return;
+    if (deleteEntity(entityId, { actionLabel })) {
+      saveAndRefresh();
+    }
   }
 
   /**
@@ -1287,6 +1376,15 @@
         selectEntity(clone.id);
       });
       titleBtns.appendChild(dupBtn);
+
+      const delBtn = document.createElement('button');
+      delBtn.className = 'print-btn print-btn-danger';
+      delBtn.title = 'Delete entity';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', async () => {
+        await confirmAndDeleteEntity(pc.id);
+      });
+      titleBtns.appendChild(delBtn);
     }
     const printBtn = document.createElement('button');
     printBtn.className = 'print-btn';
@@ -1410,8 +1508,9 @@
       minusBtn.addEventListener('click', () => {
         if (pc.stressSlots[track] <= 1) return;
         pc.stressSlots[track]--;
-        // Remove any filled pips beyond the new slot count
-        pc.stressFilled[track] = pc.stressFilled[track].filter(i => i < pc.stressSlots[track]);
+        // Truncate stress to new cap without triggering fallout.
+        const current = (pc.stressFilled[track] || []).length;
+        setPCStressLevel(pc, track, Math.min(current, pc.stressSlots[track]), { triggerFallout: false });
         appendLog(`Reduced ${track} stress slots`, pc.id);
         saveAndRefresh();
       });
@@ -1523,6 +1622,13 @@
       const valBadge = document.createElement('span');
       valBadge.className = 'res-value-badge';
       valBadge.textContent = '+' + (r.value || 0);
+      const rollBtn = document.createElement('button');
+      rollBtn.className = 'res-roll-btn';
+      rollBtn.textContent = 'Roll';
+      rollBtn.title = `Roll D10 against ${r.name} resistance`;
+      rollBtn.addEventListener('click', () => {
+        openDiceRollerForResistance(r.name, parseInt(r.value || 0, 10));
+      });
       // Stress bar for this track
       const track = r.name.toLowerCase();
       const trackData = pc.stressFilled[track];
@@ -1541,9 +1647,11 @@
         resRow.appendChild(valBadge);
         resRow.appendChild(stressBar);
         resRow.appendChild(stressNum);
+        resRow.appendChild(rollBtn);
       } else {
         resRow.appendChild(nameSpan);
         resRow.appendChild(valBadge);
+        resRow.appendChild(rollBtn);
       }
       resBody.appendChild(resRow);
     });
@@ -1954,6 +2062,13 @@
         selectEntity(clone.id);
       });
       title.appendChild(dupBtn);
+      const delBtn = document.createElement('button');
+      delBtn.className = 'print-btn print-btn-danger';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', async () => {
+        await confirmAndDeleteEntity(npc.id);
+      });
+      title.appendChild(delBtn);
     }
     title.appendChild(printBtn);
     container.appendChild(title);
@@ -1981,10 +2096,7 @@
         rejectBtn.addEventListener('click', async () => {
           const ok = await askConfirm(`Reject and delete "${entityLabel(npc)}"?`, 'Reject NPC');
           if (!ok) return;
-          delete currentCampaign().entities[npc.id];
-          state.selectedEntityId = null;
-          appendLog('Rejected NPC', npc.id);
-          saveAndRefresh();
+          if (deleteEntity(npc.id, { actionLabel: 'Rejected NPC' })) saveAndRefresh();
         });
         actions.appendChild(approveBtn);
         actions.appendChild(rejectBtn);
@@ -2271,6 +2383,13 @@
         selectEntity(clone.id);
       });
       title.appendChild(dupBtn);
+      const delBtn = document.createElement('button');
+      delBtn.className = 'print-btn print-btn-danger';
+      delBtn.textContent = 'Delete';
+      delBtn.addEventListener('click', async () => {
+        await confirmAndDeleteEntity(org.id);
+      });
+      title.appendChild(delBtn);
     }
     // Name/identity section so organisation names are editable
     const identitySec = document.createElement('div');
@@ -3215,25 +3334,15 @@
   }
 
   function totalStressForFallout(pc) {
-    const tracks = ['blood', 'mind', 'silver', 'shadow', 'reputation'];
-    let total = 0;
-    tracks.forEach(track => {
-      const filled = (pc.stressFilled && pc.stressFilled[track]) ? pc.stressFilled[track].length : 0;
-      total += Math.min(10, filled);
-    });
-    return total;
+    return RulesEngine.totalStressForFallout(pc);
   }
 
   function falloutSeverityForTotalStress(total) {
-    if (total >= 9) return 'Severe';
-    if (total >= 5) return 'Moderate';
-    return 'Minor';
+    return RulesEngine.falloutSeverityForTotalStress(total);
   }
 
   function stressClearAmountForSeverity(severity) {
-    if (severity === 'Severe') return 7;
-    if (severity === 'Moderate') return 5;
-    return 3;
+    return RulesEngine.stressClearAmountForSeverity(severity);
   }
 
   function clearStressForFallout(pc, amount, preferredTrack) {
@@ -3254,22 +3363,24 @@
 
   function setPCStressLevel(pc, track, newLevel, options = {}) {
     const triggerFallout = options.triggerFallout !== false;
+    const rng = options.rng;
     const slots = (pc.stressSlots && pc.stressSlots[track]) ? pc.stressSlots[track] : 10;
     const target = Math.max(0, Math.min(slots, parseInt(newLevel, 10) || 0));
     const before = (pc.stressFilled && pc.stressFilled[track]) ? pc.stressFilled[track].length : 0;
     pc.stressFilled[track] = Array.from({ length: target }, (_, i) => i);
     appendLog('Set ' + track + ' stress to ' + target, pc.id);
     const delta = target - before;
-    if (triggerFallout) maybeTriggerFallout(pc, track, delta);
+    if (triggerFallout) maybeTriggerFallout(pc, track, delta, { rng });
   }
 
-  function maybeTriggerFallout(pc, contextTrack, stressDelta) {
+  function maybeTriggerFallout(pc, contextTrack, stressDelta, options = {}) {
     const rules = getRulesConfig();
     if (!rules.falloutCheckOnStress) return;
     if (stressDelta <= 0) return;
     const total = totalStressForFallout(pc);
     if (total < 2) return;
-    const roll = Math.ceil(Math.random() * 10);
+    const rng = (options && typeof options.rng === 'function') ? options.rng : Math.random;
+    const roll = Math.ceil(rng() * 10);
     if (roll >= total) return;
 
     const severity = falloutSeverityForTotalStress(total);
@@ -3299,6 +3410,71 @@
     updatePendingBadge();
     updatePlayerPCButtonState();
     updateFocusToggleUI();
+  }
+
+  function ensureGraphViews(camp = currentCampaign()) {
+    if (!camp.graphViews) camp.graphViews = {};
+  }
+
+  function syncWebFilterPills() {
+    document.querySelectorAll('#web-filter-bar .filter-pill[data-type]').forEach(pill => {
+      const type = pill.dataset.type;
+      pill.classList.toggle('active', !!webFilter[type]);
+    });
+  }
+
+  function populateGraphViewSelect() {
+    const sel = document.getElementById('graph-view-select');
+    if (!sel) return;
+    const camp = currentCampaign();
+    ensureGraphViews(camp);
+    const prior = sel.value;
+    sel.innerHTML = '';
+    const base = document.createElement('option');
+    base.value = '';
+    base.textContent = 'View preset…';
+    sel.appendChild(base);
+    Object.keys(camp.graphViews).sort((a, b) => a.localeCompare(b)).forEach(name => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      if (prior === name) opt.selected = true;
+      sel.appendChild(opt);
+    });
+  }
+
+  function saveCurrentGraphView(name) {
+    const camp = currentCampaign();
+    ensureGraphViews(camp);
+    camp.graphViews[name] = {
+      scale: graphState.scale,
+      translateX: graphState.translateX,
+      translateY: graphState.translateY,
+      filters: Object.assign({}, webFilter)
+    };
+    saveCampaigns();
+    populateGraphViewSelect();
+    const sel = document.getElementById('graph-view-select');
+    if (sel) sel.value = name;
+    showToast('Saved graph view "' + name + '".', 'info');
+  }
+
+  function applyGraphView(name) {
+    const camp = currentCampaign();
+    ensureGraphViews(camp);
+    const view = camp.graphViews[name];
+    if (!view) return;
+    if (view.filters) {
+      Object.keys(webFilter).forEach(k => {
+        if (Object.prototype.hasOwnProperty.call(view.filters, k)) webFilter[k] = !!view.filters[k];
+      });
+      syncWebFilterPills();
+    }
+    if (typeof view.scale === 'number') graphState.scale = Math.max(0.2, Math.min(4, view.scale));
+    if (typeof view.translateX === 'number') graphState.translateX = view.translateX;
+    if (typeof view.translateY === 'number') graphState.translateY = view.translateY;
+    updateGraph();
+    showToast('Loaded graph view "' + name + '".', 'info');
   }
 
   /**
@@ -3556,6 +3732,7 @@
     drawGraph();
     // Refresh node select dropdown
     populateNodeSelect();
+    populateGraphViewSelect();
   }
 
   /* -----------------------------------------------------------------------
@@ -4040,6 +4217,15 @@
       selectItem.textContent = '📄 Open sheet';
       selectItem.addEventListener('click', () => { menu.remove(); selectEntity(clickedNode.id); document.querySelector('.tab-link[data-tab="sheets-view"]').click(); });
       menu.appendChild(selectItem);
+
+      const deleteItem = document.createElement('div');
+      deleteItem.className = 'ctx-item ctx-item-danger';
+      deleteItem.textContent = '🗑️ Delete entity';
+      deleteItem.addEventListener('click', async () => {
+        menu.remove();
+        await confirmAndDeleteEntity(clickedNode.id);
+      });
+      menu.appendChild(deleteItem);
     } else {
       // Canvas context: create entity at this position
       const dpr = window.devicePixelRatio || 1;
@@ -4454,16 +4640,48 @@
     prepEl.appendChild(tasksDiv);
   }
 
+  function syncLogFilterControls(camp) {
+    const sessionSelect = document.getElementById('log-session-filter');
+    const searchInput = document.getElementById('log-search-input');
+    if (searchInput) searchInput.value = logFilterState.query || '';
+    if (!sessionSelect) return;
+
+    const sessions = Array.from(new Set((camp.logs || []).map(e => String(e.session || 1)))).sort((a, b) => Number(b) - Number(a));
+    const options = ['all', ...sessions];
+    const current = logFilterState.session || 'all';
+    if (!options.includes(current)) logFilterState.session = 'all';
+
+    sessionSelect.innerHTML = '';
+    const allOpt = document.createElement('option');
+    allOpt.value = 'all';
+    allOpt.textContent = 'All sessions';
+    sessionSelect.appendChild(allOpt);
+    sessions.forEach((session) => {
+      const opt = document.createElement('option');
+      opt.value = session;
+      opt.textContent = `Session ${session}`;
+      sessionSelect.appendChild(opt);
+    });
+    sessionSelect.value = logFilterState.session;
+  }
+
   function renderLog() {
     const logList = document.getElementById('log-list');
     logList.innerHTML = '';
     const camp = currentCampaign();
+    syncLogFilterControls(camp);
+    const query = (logFilterState.query || '').trim().toLowerCase();
+    const selectedSession = logFilterState.session || 'all';
     camp.logs.slice().reverse().forEach(entry => {
       const ent = camp.entities[entry.target] || camp.relationships[entry.target];
       if (!state.gmMode) {
         if (ent && ent.gmOnly) return;
         if (ent && ent.secret) return;
       }
+      if (selectedSession !== 'all' && String(entry.session || 1) !== selectedSession) return;
+      const targetLabel = resolveLogTargetLabel(camp, entry);
+      const searchable = `${entry.action || ''} ${targetLabel} ${(entry.type || '')}`.toLowerCase();
+      if (query && !searchable.includes(query)) return;
       const li = document.createElement('li');
       if (entry.type === 'session') {
         li.className = 'log-session-divider';
@@ -4485,13 +4703,13 @@
         li.appendChild(sess);
       }
       const span = document.createElement('span');
-      span.textContent = ' ' + entry.action;
+      span.textContent = ' ' + entry.action + (targetLabel ? ' — ' + targetLabel : '');
       li.appendChild(span);
       logList.appendChild(li);
     });
     // Show empty state
     const empty = document.getElementById('log-empty');
-    if (empty) empty.classList.toggle('hidden', camp.logs.length > 0);
+    if (empty) empty.classList.toggle('hidden', logList.children.length > 0);
   }
 
   /**
@@ -4679,7 +4897,18 @@
     openDiceRoller(skillName, mastered ? 2 : 1);
   }
 
-  function openDiceRoller(contextLabel, poolBonus) {
+  function openDiceRollerForResistance(resistanceName, resistanceValue) {
+    const bonus = Number.isFinite(resistanceValue) ? resistanceValue : 0;
+    openDiceRoller(`${resistanceName} Resistance`, 1, {
+      dice: [{ sides: 10, label: 'D10', color: '#9c4221' }],
+      initialDifficulty: bonus,
+      lockDifficulty: true,
+      modifierLabel: 'Resistance bonus:',
+      helperText: `Using ${resistanceName} +${bonus}.`
+    });
+  }
+
+  function openDiceRoller(contextLabel, poolBonus, options = {}) {
     const overlay = document.getElementById('modal-overlay');
     const modal = document.getElementById('modal');
     const content = document.getElementById('modal-content');
@@ -4693,7 +4922,7 @@
     wrap.className = 'dice-roller';
 
     // Dice buttons
-    const dice = [
+    const dice = options.dice || [
       { sides: 3, label: 'D3', color: '#7c4dab' },
       { sides: 6, label: 'D6', color: '#2b6cb0' },
       { sides: 8, label: 'D8', color: '#276749' },
@@ -4716,21 +4945,37 @@
     const modRow = document.createElement('div');
     modRow.className = 'dice-mod-row';
     const modLabel = document.createElement('label');
-    modLabel.textContent = 'Difficulty modifier:';
+    modLabel.textContent = options.modifierLabel || 'Difficulty modifier:';
     const modSelect = document.createElement('select');
     modSelect.id = 'dice-difficulty';
-    [
-      { value: '0', label: 'Standard (no mod)' },
-      { value: '-1', label: 'Difficult (−1 pool)' },
-      { value: '-2', label: 'Very Difficult (−2 pool)' },
-      { value: '1', label: 'Assisted (+1 pool)' },
-      { value: '2', label: 'Two Assists (+2 pool)' }
-    ].forEach(o => {
+    const initialDifficulty = Number.isInteger(options.initialDifficulty) ? options.initialDifficulty : 0;
+    if (options.lockDifficulty) {
       const opt = document.createElement('option');
-      opt.value = o.value;
-      opt.textContent = o.label;
+      opt.value = String(initialDifficulty);
+      opt.textContent = `${initialDifficulty >= 0 ? '+' : ''}${initialDifficulty} (locked)`;
       modSelect.appendChild(opt);
-    });
+      modSelect.disabled = true;
+    } else {
+      [
+        { value: '0', label: 'Standard (no mod)' },
+        { value: '-1', label: 'Difficult (−1 pool)' },
+        { value: '-2', label: 'Very Difficult (−2 pool)' },
+        { value: '1', label: 'Assisted (+1 pool)' },
+        { value: '2', label: 'Two Assists (+2 pool)' }
+      ].forEach(o => {
+        const opt = document.createElement('option');
+        opt.value = o.value;
+        opt.textContent = o.label;
+        modSelect.appendChild(opt);
+      });
+      if (!['-2','-1','0','1','2'].includes(String(initialDifficulty))) {
+        const customOpt = document.createElement('option');
+        customOpt.value = String(initialDifficulty);
+        customOpt.textContent = `Custom (${initialDifficulty >= 0 ? '+' : ''}${initialDifficulty} pool)`;
+        modSelect.appendChild(customOpt);
+      }
+      modSelect.value = String(initialDifficulty);
+    }
     modRow.appendChild(modLabel);
     modRow.appendChild(modSelect);
     wrap.appendChild(modRow);
@@ -4742,6 +4987,14 @@
       mastNote.style.marginBottom = '6px';
       mastNote.textContent = '★ Mastered — rolling extra die (keep best)';
       wrap.appendChild(mastNote);
+    }
+    if (options.helperText) {
+      const helper = document.createElement('div');
+      helper.style.fontSize = '0.8rem';
+      helper.style.color = 'var(--spire-muted)';
+      helper.style.marginTop = '-6px';
+      helper.textContent = options.helperText;
+      wrap.appendChild(helper);
     }
 
     // Result display
@@ -5368,10 +5621,11 @@
       pill.addEventListener('click', () => {
         const type = pill.dataset.type;
         webFilter[type] = !webFilter[type];
-        pill.classList.toggle('active', webFilter[type]);
+        syncWebFilterPills();
         updateGraph();
       });
     });
+    syncWebFilterPills();
     const focusToggle = document.getElementById('filter-focus-toggle');
     if (focusToggle) {
       focusToggle.addEventListener('click', () => {
@@ -5391,6 +5645,20 @@
     });
     // Session note
     const noteInput = document.getElementById('log-note-input');
+    const logSearchInput = document.getElementById('log-search-input');
+    if (logSearchInput) {
+      logSearchInput.addEventListener('input', (e) => {
+        logFilterState.query = e.target.value || '';
+        renderLog();
+      });
+    }
+    const logSessionFilter = document.getElementById('log-session-filter');
+    if (logSessionFilter) {
+      logSessionFilter.addEventListener('change', (e) => {
+        logFilterState.session = e.target.value || 'all';
+        renderLog();
+      });
+    }
     document.getElementById('log-note-btn').addEventListener('click', () => {
       const val = noteInput.value.trim();
       if (!val) return;
@@ -5425,6 +5693,42 @@
         selectEntity(id);
         // Center the custom graph view on the selected node
         centerOnNode(id);
+      });
+    }
+    const graphViewSel = document.getElementById('graph-view-select');
+    if (graphViewSel) {
+      graphViewSel.addEventListener('change', e => {
+        const name = e.target.value;
+        if (!name) return;
+        applyGraphView(name);
+      });
+    }
+    const saveGraphViewBtn = document.getElementById('save-graph-view-btn');
+    if (saveGraphViewBtn) {
+      saveGraphViewBtn.addEventListener('click', async () => {
+        const current = document.getElementById('graph-view-select')?.value || '';
+        const name = await askPrompt('Name this graph view preset:', current, { title: 'Save Graph View', submitText: 'Save' });
+        if (!name || !name.trim()) return;
+        saveCurrentGraphView(name.trim());
+      });
+    }
+    const deleteGraphViewBtn = document.getElementById('delete-graph-view-btn');
+    if (deleteGraphViewBtn) {
+      deleteGraphViewBtn.addEventListener('click', async () => {
+        const sel = document.getElementById('graph-view-select');
+        const name = sel ? sel.value : '';
+        if (!name) {
+          showToast('Select a graph view to delete.', 'warn');
+          return;
+        }
+        const ok = await askConfirm('Delete graph view "' + name + '"?', 'Delete Graph View');
+        if (!ok) return;
+        const camp = currentCampaign();
+        ensureGraphViews(camp);
+        delete camp.graphViews[name];
+        saveCampaigns();
+        populateGraphViewSelect();
+        showToast('Deleted graph view "' + name + '".', 'info');
       });
     }
     // Close modal via the X button
@@ -5565,6 +5869,7 @@
         clearStressOnFallout: true
       };
     }
+    if (!camp.graphViews) camp.graphViews = {};
     if (!camp.sectionCollapse) camp.sectionCollapse = {};
   }
 

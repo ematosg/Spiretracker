@@ -852,6 +852,15 @@ details[open] summary { color: var(--accent-hi); }
   border-color: var(--accent);
   color: var(--accent-hi);
 }
+.print-btn-danger {
+  border-color: rgba(192,57,43,0.5);
+  color: #d18383;
+}
+.print-btn-danger:hover {
+  border-color: rgba(192,57,43,0.8);
+  color: #f0b0b0;
+  background: rgba(192,57,43,0.14);
+}
 
 /* Sheet sections */
 .inspector-section {
@@ -1207,6 +1216,11 @@ details[open] summary { color: var(--accent-hi); }
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.web-toolbar-right {
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .toolbar-btn {
@@ -1923,6 +1937,23 @@ body.player-mode .tab-link[data-tab="log-view"] {
   align-items: center;
   gap: 8px;
 }
+#log-search-input,
+#log-session-filter {
+  background: var(--spire-mid);
+  border: 1px solid var(--spire-border);
+  border-radius: var(--radius);
+  color: var(--spire-text);
+  padding: 6px 10px;
+  font-size: 0.78rem;
+}
+#log-search-input {
+  min-width: 180px;
+}
+#log-search-input:focus,
+#log-session-filter:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 
 .log-session-badge {
   font-size: 0.7rem;
@@ -2274,6 +2305,20 @@ body.player-mode .tab-link[data-tab="log-view"] {
   color: var(--spire-dim);
   min-width: 36px;
   text-align: right;
+}
+.res-roll-btn {
+  padding: 2px 8px;
+  font-size: 0.66rem;
+  border: 1px solid var(--spire-border);
+  border-radius: 5px;
+  background: var(--spire-mid);
+  color: var(--spire-text);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.res-roll-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent-hi);
 }
 
 /* =============================================
@@ -2655,6 +2700,13 @@ body.player-mode .tab-link[data-tab="log-view"] {
   transition: background 0.1s;
 }
 .ctx-item:hover { background: var(--spire-mid); }
+.ctx-item-danger {
+  color: #e4a5a5;
+  border-top: 1px solid var(--spire-border);
+}
+.ctx-item-danger:hover {
+  background: rgba(192,57,43,0.14);
+}
 .ctx-item-cancel { color: var(--spire-dim); border-top: 1px solid var(--spire-border); margin-top: 2px; }
 
 /* =============================================
@@ -2712,6 +2764,11 @@ select option { background: var(--spire-deep); }
   }
   #layout {
     height: calc(100vh - 98px);
+  }
+  #save-graph-view-btn,
+  #delete-graph-view-btn {
+    padding: 6px 9px;
+    font-size: 0.65rem;
   }
 }
 
