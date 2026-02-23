@@ -1539,8 +1539,8 @@
     identity.appendChild(durField);
     container.appendChild(identity);
     container.appendChild(twoCol);
-    // LEFT COLUMN: Stress, Fallout, Resistances, Bonds, Inventory, Tasks
-    // RIGHT COLUMN: Skills, Domains, Class Features
+    // LEFT COLUMN: Stress, Fallout, Bonds, Inventory, Tasks
+    // RIGHT COLUMN: Skills, Domains, Resistances, Class Features
     // Stress section
     const stressSection = document.createElement('div');
     stressSection.className = 'inspector-section';
@@ -1684,7 +1684,7 @@
     });
     falloutBody.appendChild(addFalloutBtn);
     leftCol.appendChild(falloutSec);
-    // Resistances → left col (with stress context bars)
+    // Resistances → right col (with stress context bars)
     const { sec: resSec, body: resBody } = makeSection('resistances', 'Resistances', 'resistances', pc);
     pc.resistances.forEach(r => {
       const resRow = document.createElement('div');
@@ -1738,7 +1738,6 @@
       });
       resBody.appendChild(addResBtn);
     }
-    leftCol.appendChild(resSec);
 
     // Bonds → left col
     const { sec: bondSec, body: bondBody } = makeSection('bonds', 'Bonds', 'bonds', pc);
@@ -1819,6 +1818,7 @@
     });
     domainsBody.appendChild(addDomainBtn);
     rightCol.appendChild(domainsSec);
+    rightCol.appendChild(resSec);
 
     // Class features section: shows information and options derived from
     // the selected class. Includes refresh text, bond prompts, inventory
@@ -3997,7 +3997,7 @@
       const isSelected = state.selectedRelId === edge.id;
       const color = edgeColor(edge.type);
       const focusEdge = !focusNodeId || edge.source.id === focusNodeId || edge.target.id === focusNodeId;
-      ctx.strokeStyle = isSelected ? '#fff' : color;
+      ctx.strokeStyle = color;
       ctx.lineWidth = (isSelected ? 3 : 2) / graphState.scale;
       ctx.setLineDash(edgeDashForType(edge.type));
       if (focusNodeId) ctx.globalAlpha = isSelected ? 1 : (focusEdge ? 0.9 : 0.12);
@@ -4014,7 +4014,7 @@
       const mx = (x1 + x2) / 2;
       const my = (y1 + y2) / 2;
       const edgeLabel = edge.secret ? `🔒 ${edge.type}` : edge.type;
-      drawEdgeLabel(ctx, edgeLabel, mx, my, isSelected ? '#fff' : color, focusNodeId && !focusEdge ? 0.18 : 1);
+      drawEdgeLabel(ctx, edgeLabel, mx, my, color, focusNodeId && !focusEdge ? 0.18 : 1);
     });
 
     // Draw nodes
