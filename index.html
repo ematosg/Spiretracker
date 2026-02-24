@@ -121,8 +121,15 @@
         <div class="nav-right">
           <span id="save-state-indicator" class="save-state-indicator" aria-live="polite">Saved</span>
           <span id="sync-conflict-indicator" class="save-state-indicator state-error hidden" aria-live="polite">Updated in another tab</span>
+          <button id="save-retry-btn" class="nav-icon-btn hidden" title="Retry save" aria-label="Retry save"><span class="material-icons">refresh</span></button>
           <button id="sync-reload-btn" class="nav-icon-btn hidden" title="Reload latest from another tab" aria-label="Reload latest campaign from another tab"><span class="material-icons">sync</span></button>
-          <button id="undo-btn" class="nav-icon-btn" title="Undo last destructive action" aria-label="Undo last destructive action"><span class="material-icons">undo</span></button>
+          <button id="sync-force-btn" class="nav-icon-btn hidden" title="Force overwrite with this tab" aria-label="Force overwrite with this tab"><span class="material-icons">warning</span></button>
+          <button id="sync-queue-btn" class="nav-icon-btn" title="Sync queue (empty)" aria-label="Open sync queue">
+            <span class="material-icons">cloud_sync</span>
+            <span id="sync-queue-count" class="nav-icon-badge hidden">0</span>
+          </button>
+          <button id="undo-btn" class="nav-icon-btn" title="Undo last destructive action" aria-label="Undo last destructive action" disabled><span class="material-icons">undo</span></button>
+          <button id="redo-btn" class="nav-icon-btn" title="Redo last undone action" aria-label="Redo last undone action" disabled><span class="material-icons">redo</span></button>
           <button id="save-btn" class="nav-icon-btn" title="Save (Ctrl+S)" aria-label="Save campaign"><span class="material-icons">save</span></button>
           <button id="shortcuts-btn" class="nav-icon-btn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><span class="material-icons">keyboard</span></button>
           <button id="dark-mode-btn" class="nav-icon-btn" title="Toggle dark mode" aria-label="Toggle dark mode"><span class="material-icons">dark_mode</span></button>
@@ -250,7 +257,12 @@
               <span class="legend-item"><span class="legend-swatch" style="background:#f57f17"></span>Owes / Debt</span>
               <span class="legend-item"><span class="legend-swatch" style="background:#78909c"></span>Unknown/Unclear</span>
               <span class="legend-item"><span class="legend-swatch" style="background:#546e7a;border-top:2px dotted #546e7a;height:0"></span>Secret</span>
-              <span class="legend-semantic">Line style: dashed = hostile/tense, dotted = covert/surveillance, solid = standard. Thicker lines mean stronger ties. Lower opacity means lower certainty/awareness.</span>
+              <span class="legend-item"><span class="legend-swatch legend-swatch-solid"></span>Solid = standard</span>
+              <span class="legend-item"><span class="legend-swatch legend-swatch-dashed"></span>Dashed = hostile/tense</span>
+              <span class="legend-item"><span class="legend-swatch legend-swatch-dotted"></span>Dotted = covert/surveillance</span>
+              <span class="legend-item"><span class="legend-swatch legend-swatch-fade"></span>Faded = de-emphasized/focus</span>
+              <span id="legend-semantic-line" class="legend-semantic">Line width: default 2px, selected 3px. Directed links show arrowheads.</span>
+              <span id="legend-semantic-visibility" class="legend-semantic">Visibility: GM-only nodes and secret links are hidden for players.</span>
               <span id="web-rel-hint" class="legend-semantic">Tip: add relationships to show edges between entities.</span>
               <span style="margin-left:auto;color:var(--spire-dim);font-size:0.65rem">Double-click node → open sheet</span>
             </div>
@@ -302,11 +314,23 @@
                 <select id="log-session-filter" title="Filter by session">
                   <option value="all">All sessions</option>
                 </select>
+                <select id="log-actor-filter" title="Filter by actor">
+                  <option value="all">All actors</option>
+                </select>
+                <select id="log-type-filter" title="Filter by action type">
+                  <option value="all">All types</option>
+                  <option value="action">Actions</option>
+                  <option value="note">Notes</option>
+                  <option value="session">Session markers</option>
+                </select>
                 <button id="generate-recap-btn" class="toolbar-btn" title="Generate session recap">
                   <span class="material-icons">summarize</span> Recap
                 </button>
                 <button id="new-session-btn" class="toolbar-btn" title="Start new session (resets core abilities)">
                   <span class="material-icons">play_circle</span> New Session
+                </button>
+                <button id="export-log-csv-btn" class="toolbar-btn" title="Export filtered log as CSV">
+                  <span class="material-icons">download</span> CSV
                 </button>
                 <button id="clear-log-btn" class="toolbar-btn toolbar-btn-danger" title="Clear Log">
                   <span class="material-icons">delete</span> Clear
@@ -321,6 +345,7 @@
               <div id="session-prep-panel" class="session-prep-panel"></div>
               <ul id="log-list" class="log-list"></ul>
             </div>
+            <div id="log-pagination" class="log-pagination hidden"></div>
             <div id="log-empty" class="log-empty hidden">
               <span class="material-icons">history</span>
               <p>No activity yet.</p>
@@ -385,6 +410,8 @@
     <div id="modal-content"></div>
   </div>
 
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="online-client.js?v=1"></script>
   <script src="rules-engine.js?v=1"></script>
   <script src="app.js?v=6"></script>
 </body>

@@ -92,6 +92,158 @@
     }
   };
 
+  const NPC_TEMPLATES = {
+    none: { label: 'No template' },
+    guard: {
+      label: 'Guard',
+      role: 'Guard',
+      threatLevel: 'Minor',
+      disposition: 'Wary',
+      wants: 'Keep order and avoid blame',
+      fears: 'Unexpected violence',
+      leverage: 'Access to patrol routes',
+      inventory: [
+        { item: 'Truncheon', quantity: 1, type: 'weapon', stress: 'D3 stress', tags: ['Brutal'] },
+        { item: 'Uniform and badge', quantity: 1, type: 'armor', resistance: 1, tags: [] }
+      ]
+    },
+    functionary: {
+      label: 'Functionary',
+      role: 'Ministry Functionary',
+      threatLevel: 'Minor',
+      disposition: 'Neutral',
+      wants: 'Protect status and paperwork',
+      fears: 'Scandal reaching superiors',
+      leverage: 'Permits, records, access stamps',
+      inventory: [
+        { item: 'Official seal', quantity: 1, type: 'other', tags: [] },
+        { item: 'Locked folio', quantity: 1, type: 'other', tags: ['Sensitive'] }
+      ]
+    },
+    cultist: {
+      label: 'Cultist',
+      role: 'Cult Member',
+      threatLevel: 'Significant',
+      disposition: 'Hostile',
+      wants: 'Advance the cult agenda',
+      fears: 'Exposure and betrayal',
+      leverage: 'Secret meeting sites',
+      inventory: [
+        { item: 'Ritual knife', quantity: 1, type: 'weapon', stress: 'D3 stress', tags: ['Concealable'] },
+        { item: 'Occult iconography', quantity: 1, type: 'other', tags: ['Occult'] }
+      ]
+    },
+    fixer: {
+      label: 'Fixer',
+      role: 'Street Fixer',
+      threatLevel: 'Significant',
+      disposition: 'Neutral',
+      wants: 'Profit and influence',
+      fears: 'Losing network credibility',
+      leverage: 'Contacts in multiple districts',
+      inventory: [
+        { item: 'Hidden pistol', quantity: 1, type: 'weapon', stress: 'D6 stress', tags: ['Concealable', 'Loud'] },
+        { item: 'Ledger of favors', quantity: 1, type: 'other', tags: ['Blackmail'] }
+      ]
+    }
+  };
+
+  const SCENE_COMPLICATIONS = [
+    'Ministry patrols are unexpectedly present.',
+    'A trusted contact is compromised.',
+    'Violence erupts nearby with unclear cause.',
+    'A key route is blocked or surveilled.',
+    'A rumor spreads before the crew arrives.',
+    'A faction demands immediate payment or proof.'
+  ];
+  const SCENE_FACTION_REACTIONS = [
+    'The Ministry marks this district as sensitive.',
+    'A rival cell starts moving against the party.',
+    'A local gang offers help for a price.',
+    'A religious faction calls in old obligations.',
+    'An organization goes quiet and stops answering.',
+    'An enemy openly escalates instead of hiding.'
+  ];
+  const SCENE_TWISTS = [
+    'An old ally appears with conflicting goals.',
+    'A mission target is connected to a PC bond.',
+    'Collateral damage risk becomes immediate.',
+    'Someone the party trusts is feeding information out.',
+    'The objective is moved or replaced at the last minute.',
+    'A seeming victory creates a worse follow-up problem.'
+  ];
+
+  function baseNpcTemplates() {
+    return JSON.parse(JSON.stringify(NPC_TEMPLATES));
+  }
+
+  function normalizeScenarioPack(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const id = String(raw.id || '').trim() || generateId('pack');
+    const name = String(raw.name || '').trim() || 'Scenario Pack';
+    const source = String(raw.source || 'import').trim() || 'import';
+    const enabled = raw.enabled !== false;
+    const prompts = raw.scenePrompts || {};
+    const npcTemplates = (raw.npcTemplates && typeof raw.npcTemplates === 'object') ? raw.npcTemplates : {};
+    const clean = {
+      id,
+      name,
+      source,
+      enabled,
+      scenePrompts: {
+        complications: Array.isArray(prompts.complications) ? prompts.complications.map(String).map((s) => s.trim()).filter(Boolean) : [],
+        factionReactions: Array.isArray(prompts.factionReactions) ? prompts.factionReactions.map(String).map((s) => s.trim()).filter(Boolean) : [],
+        twists: Array.isArray(prompts.twists) ? prompts.twists.map(String).map((s) => s.trim()).filter(Boolean) : []
+      },
+      npcTemplates: {}
+    };
+    Object.entries(npcTemplates).forEach(([key, value]) => {
+      if (!key || key === 'none' || !value || typeof value !== 'object') return;
+      clean.npcTemplates[String(key)] = JSON.parse(JSON.stringify(value));
+    });
+    if (
+      !clean.scenePrompts.complications.length &&
+      !clean.scenePrompts.factionReactions.length &&
+      !clean.scenePrompts.twists.length &&
+      !Object.keys(clean.npcTemplates).length
+    ) return null;
+    return clean;
+  }
+
+  function getActiveScenarioPacks(camp = currentCampaign()) {
+    const packs = Array.isArray(camp && camp.scenarioPacks) ? camp.scenarioPacks : [];
+    return packs.filter((p) => p && p.enabled !== false);
+  }
+
+  function getEffectiveNpcTemplates(camp = currentCampaign()) {
+    const merged = baseNpcTemplates();
+    getActiveScenarioPacks(camp).forEach((pack) => {
+      Object.entries(pack.npcTemplates || {}).forEach(([key, tpl]) => {
+        if (!key || !tpl || typeof tpl !== 'object') return;
+        merged[key] = JSON.parse(JSON.stringify(tpl));
+      });
+    });
+    return merged;
+  }
+
+  function getEffectiveScenePromptPools(camp = currentCampaign()) {
+    const pools = {
+      complications: SCENE_COMPLICATIONS.slice(),
+      factionReactions: SCENE_FACTION_REACTIONS.slice(),
+      twists: SCENE_TWISTS.slice()
+    };
+    getActiveScenarioPacks(camp).forEach((pack) => {
+      const prompts = pack.scenePrompts || {};
+      if (Array.isArray(prompts.complications)) pools.complications.push(...prompts.complications);
+      if (Array.isArray(prompts.factionReactions)) pools.factionReactions.push(...prompts.factionReactions);
+      if (Array.isArray(prompts.twists)) pools.twists.push(...prompts.twists);
+    });
+    pools.complications = Array.from(new Set(pools.complications.filter(Boolean)));
+    pools.factionReactions = Array.from(new Set(pools.factionReactions.filter(Boolean)));
+    pools.twists = Array.from(new Set(pools.twists.filter(Boolean)));
+    return pools;
+  }
+
   function defaultFalloutGuidance() {
     return JSON.parse(JSON.stringify(FALLOUT_GUIDANCE));
   }
@@ -563,6 +715,12 @@
     relTypes: DEFAULT_REL_TYPES.slice(),
     users: {},
     currentUser: null,
+    clientId: generateId('client'),
+    realtimeChannel: null,
+    supabaseRealtimeChannel: null,
+    syncConfig: null,
+    realtimeTransport: 'local',
+    telemetryConfig: null,
     lastSeenRevision: '',
     syncConflictActive: false,
     localEditsSinceConflict: 0
@@ -570,7 +728,11 @@
   let authMode = 'login';
   const logFilterState = {
     session: 'all',
-    query: ''
+    query: '',
+    actor: 'all',
+    actionType: 'all',
+    page: 1,
+    pageSize: 50
   };
   const messageFilterState = {
     mode: 'all'
@@ -579,6 +741,7 @@
   let eventListenersBound = false;
   let saveStateTimer = null;
   let isApplyingUndo = false;
+  let globalErrorHandlersBound = false;
   const RulesEngine = (typeof window !== 'undefined' && window.SpireRulesEngine) ? window.SpireRulesEngine : {
     getRulesConfig(camp) {
       const defaults = { difficultyDowngrades: true, falloutCheckOnStress: true, clearStressOnFallout: true };
@@ -657,8 +820,13 @@
       logs: [],
       messages: [],
       clocks: [],
+      lastScenePrompt: null,
+      scenarioPacks: [],
+      uiTipsDismissed: {},
       relationshipUndo: {},
-      undoStack: []
+      relationshipRedo: {},
+      undoStack: [],
+      redoStack: []
     };
   }
 
@@ -752,6 +920,72 @@
     };
     campaign.relationships[id] = rel;
     return rel;
+  }
+
+  function normalizeStressTrack(track) {
+    const t = String(track || '').toLowerCase();
+    return ['blood', 'mind', 'silver', 'shadow', 'reputation'].includes(t) ? t : 'mind';
+  }
+
+  function applyRelationshipConsequence(rel, opts = {}) {
+    const camp = currentCampaign();
+    if (!camp || !rel) return false;
+    const target = camp.entities[opts.targetId];
+    if (!target) return false;
+    const source = camp.entities[rel.source];
+    const peer = camp.entities[target.id === rel.source ? rel.target : rel.source];
+    const relType = rel.type || 'Relationship';
+    const severity = opts.severity || rel.falloutLevel || 'Minor';
+    const detail = (opts.detail || '').trim();
+
+    if (opts.kind === 'bond-fallout') {
+      if (!Array.isArray(target.fallout)) target.fallout = [];
+      target.fallout.push({
+        id: generateId('fallout'),
+        type: opts.track || 'Mind',
+        severity,
+        name: opts.name || `Bond strain (${relType})`,
+        description: detail || `Triggered by ${entityLabel(source)} ${rel.directed ? '->' : '<->'} ${entityLabel(peer || source)}.`,
+        resolved: false,
+        timestamp: new Date().toISOString()
+      });
+      appendLog('Applied bond fallout', target.id);
+      return true;
+    }
+
+    if (opts.kind === 'social-stress') {
+      if (target.type !== 'pc') {
+        showToast('Social stress can only be applied to PCs.', 'warn');
+        return false;
+      }
+      const track = normalizeStressTrack(opts.track);
+      const amount = Math.max(1, Math.min(10, parseInt(opts.amount, 10) || 1));
+      const current = (target.stressFilled && target.stressFilled[track]) ? target.stressFilled[track].length : 0;
+      const maxSlots = (target.stressSlots && target.stressSlots[track]) ? target.stressSlots[track] : 10;
+      setPCStressLevel(target, track, Math.min(maxSlots, current + amount), { triggerFallout: true });
+      appendLog('Applied social consequence stress', target.id);
+      return true;
+    }
+
+    if (opts.kind === 'followup-task') {
+      if (target.type !== 'pc') {
+        showToast('Follow-up tasks can only be added to PCs.', 'warn');
+        return false;
+      }
+      if (!Array.isArray(target.tasks)) target.tasks = [];
+      target.tasks.push({
+        id: generateId('task'),
+        title: opts.taskTitle || `Follow-up: ${relType} with ${entityLabel(peer || source)}`,
+        status: 'To Do',
+        priority: 'Normal',
+        dueDate: '',
+        notes: detail || ''
+      });
+      appendLog('Created bond follow-up task', target.id);
+      return true;
+    }
+
+    return false;
   }
 
   /**
@@ -909,6 +1143,164 @@
     return state.currentUser ? `${base}:${state.currentUser}` : base;
   }
 
+  function syncConfigStorageKey() {
+    return userScopedKey('spire-sync-config');
+  }
+
+  function telemetryConfigStorageKey() {
+    return userScopedKey('spire-telemetry-config');
+  }
+
+  function crashLogStorageKey() {
+    return userScopedKey('spire-crash-log');
+  }
+
+  function defaultSyncConfig() {
+    return {
+      transport: 'local',
+      supabaseUrl: '',
+      supabaseAnonKey: ''
+    };
+  }
+
+  function defaultTelemetryConfig() {
+    return {
+      enabled: false,
+      endpoint: '',
+      maxLocal: 50
+    };
+  }
+
+  function loadSyncConfig() {
+    try {
+      const raw = localStorage.getItem(syncConfigStorageKey());
+      if (!raw) return defaultSyncConfig();
+      const parsed = JSON.parse(raw) || {};
+      const cfg = defaultSyncConfig();
+      if (parsed.transport === 'supabase') cfg.transport = 'supabase';
+      if (typeof parsed.supabaseUrl === 'string') cfg.supabaseUrl = parsed.supabaseUrl.trim();
+      if (typeof parsed.supabaseAnonKey === 'string') cfg.supabaseAnonKey = parsed.supabaseAnonKey.trim();
+      return cfg;
+    } catch (_) {
+      return defaultSyncConfig();
+    }
+  }
+
+  function loadTelemetryConfig() {
+    try {
+      const raw = localStorage.getItem(telemetryConfigStorageKey());
+      if (!raw) return defaultTelemetryConfig();
+      const parsed = JSON.parse(raw) || {};
+      return {
+        enabled: !!parsed.enabled,
+        endpoint: typeof parsed.endpoint === 'string' ? parsed.endpoint.trim() : '',
+        maxLocal: Math.max(10, Math.min(200, parseInt(parsed.maxLocal, 10) || 50))
+      };
+    } catch (_) {
+      return defaultTelemetryConfig();
+    }
+  }
+
+  function saveTelemetryConfig(config = {}) {
+    const safe = defaultTelemetryConfig();
+    safe.enabled = !!config.enabled;
+    safe.endpoint = typeof config.endpoint === 'string' ? config.endpoint.trim() : '';
+    safe.maxLocal = Math.max(10, Math.min(200, parseInt(config.maxLocal, 10) || 50));
+    state.telemetryConfig = safe;
+    try {
+      localStorage.setItem(telemetryConfigStorageKey(), JSON.stringify(safe));
+    } catch (_) {}
+    return safe;
+  }
+
+  function loadCrashLog() {
+    try {
+      const raw = localStorage.getItem(crashLogStorageKey());
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function saveCrashLog(logs) {
+    try {
+      localStorage.setItem(crashLogStorageKey(), JSON.stringify(Array.isArray(logs) ? logs : []));
+    } catch (_) {}
+  }
+
+  function enqueueCrashReport(report = {}) {
+    const cfg = state.telemetryConfig || loadTelemetryConfig();
+    const entry = Object.assign({
+      id: generateId('crash'),
+      time: new Date().toISOString(),
+      user: state.currentUser || '',
+      campaignId: state.currentCampaignId || '',
+      gmMode: !!state.gmMode,
+      userAgent: navigator.userAgent || ''
+    }, report || {});
+    const logs = loadCrashLog();
+    logs.push(entry);
+    while (logs.length > (cfg.maxLocal || 50)) logs.shift();
+    saveCrashLog(logs);
+
+    if (!cfg.enabled || !cfg.endpoint) return;
+    try {
+      const body = JSON.stringify(entry);
+      if (navigator.sendBeacon) {
+        const blob = new Blob([body], { type: 'application/json' });
+        navigator.sendBeacon(cfg.endpoint, blob);
+      } else {
+        fetch(cfg.endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body
+        }).catch(() => {});
+      }
+    } catch (_) {}
+  }
+
+  function bindGlobalErrorHandlers() {
+    if (globalErrorHandlersBound) return;
+    globalErrorHandlersBound = true;
+    window.addEventListener('error', (event) => {
+      try {
+        enqueueCrashReport({
+          kind: 'error',
+          message: event.message || 'Unknown error',
+          source: event.filename || '',
+          line: Number(event.lineno) || 0,
+          column: Number(event.colno) || 0,
+          stack: event.error && event.error.stack ? String(event.error.stack) : ''
+        });
+      } catch (_) {}
+    });
+    window.addEventListener('unhandledrejection', (event) => {
+      try {
+        const reason = event.reason;
+        enqueueCrashReport({
+          kind: 'unhandledrejection',
+          message: typeof reason === 'string' ? reason : (reason && reason.message) ? reason.message : 'Unhandled rejection',
+          stack: reason && reason.stack ? String(reason.stack) : ''
+        });
+      } catch (_) {}
+    });
+  }
+
+  function saveSyncConfig(config = {}) {
+    const safe = defaultSyncConfig();
+    if (config.transport === 'supabase') safe.transport = 'supabase';
+    if (typeof config.supabaseUrl === 'string') safe.supabaseUrl = config.supabaseUrl.trim();
+    if (typeof config.supabaseAnonKey === 'string') safe.supabaseAnonKey = config.supabaseAnonKey.trim();
+    state.syncConfig = safe;
+    try {
+      localStorage.setItem(syncConfigStorageKey(), JSON.stringify(safe));
+    } catch (_) {
+      // ignore storage errors
+    }
+    return safe;
+  }
+
   function loadUsers() {
     try {
       const raw = localStorage.getItem('spire-users');
@@ -975,6 +1367,7 @@
 
     const payload = JSON.parse(JSON.stringify(camp));
     payload.undoStack = [];
+    payload.redoStack = [];
     shared[code] = {
       code,
       owner: camp.owner,
@@ -1065,16 +1458,211 @@
     return `Updated in another tab (${edits} local change${edits === 1 ? '' : 's'} pending)`;
   }
 
+  function pendingOpsStorageKey() {
+    return userScopedKey('spire-pending-ops');
+  }
+
+  function loadPendingOps() {
+    try {
+      const raw = localStorage.getItem(pendingOpsStorageKey());
+      const parsed = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function savePendingOps(ops) {
+    try {
+      localStorage.setItem(pendingOpsStorageKey(), JSON.stringify(Array.isArray(ops) ? ops : []));
+    } catch (_) {
+      // ignore storage failures
+    }
+    updateSyncQueueButton();
+  }
+
+  function removePendingOpsById(ids = []) {
+    const remove = new Set((Array.isArray(ids) ? ids : []).filter(Boolean));
+    if (!remove.size) return;
+    const next = loadPendingOps().filter((op) => !remove.has(op.id));
+    savePendingOps(next);
+  }
+
+  function enqueuePendingSaveOp() {
+    if (!state.currentUser) return;
+    const data = {
+      campaigns: state.campaigns,
+      currentCampaignId: state.currentCampaignId
+    };
+    const ops = loadPendingOps();
+    ops.push({
+      id: generateId('op'),
+      time: new Date().toISOString(),
+      kind: 'saveCampaigns',
+      baseRevision: state.lastSeenRevision || localStorage.getItem(userScopedKey('spire-campaigns-rev')) || '',
+      payload: data
+    });
+    // Keep queue bounded.
+    while (ops.length > 50) ops.shift();
+    savePendingOps(ops);
+  }
+
+  function flushPendingSaveOps() {
+    if (!navigator.onLine || !state.currentUser) return false;
+    const ops = loadPendingOps();
+    if (!ops.length) return false;
+    const latest = ops[ops.length - 1];
+    if (!latest || latest.kind !== 'saveCampaigns' || !latest.payload) return false;
+    try {
+      const currentRev = localStorage.getItem(userScopedKey('spire-campaigns-rev')) || '';
+      if (latest.baseRevision && currentRev && latest.baseRevision !== currentRev) {
+        const msg = `Sync conflict: queued changes based on older revision (${ops.length} queued)`;
+        setSyncConflictWarning(true, msg);
+        setSaveState('error', msg);
+        return false;
+      }
+      const serialized = JSON.stringify(latest.payload);
+      localStorage.setItem(userScopedKey('spire-campaigns'), serialized);
+      const revisionToken = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      localStorage.setItem(userScopedKey('spire-campaigns-rev'), revisionToken);
+      state.lastSeenRevision = revisionToken;
+      localStorage.setItem(userScopedKey('spire-campaigns-backup'), serialized);
+      localStorage.setItem(userScopedKey('spire-campaigns-backup-ts'), new Date().toISOString());
+      savePendingOps([]);
+      broadcastRealtimeUpdate({
+        type: 'campaign_saved',
+        revision: revisionToken,
+        campaignId: state.currentCampaignId,
+        actor: currentActorLabel(),
+        actorRole: currentActorRole()
+      });
+      setSaveState('saved', 'Synced queued changes');
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function closeRealtimeChannel() {
+    try {
+      if (state.realtimeChannel) state.realtimeChannel.close();
+    } catch (_) {}
+    try {
+      if (state.supabaseRealtimeChannel) {
+        if (typeof state.supabaseRealtimeChannel.unsubscribe === 'function') {
+          state.supabaseRealtimeChannel.unsubscribe();
+        } else if (typeof state.supabaseRealtimeChannel.close === 'function') {
+          state.supabaseRealtimeChannel.close();
+        }
+      }
+    } catch (_) {}
+    state.realtimeChannel = null;
+    state.supabaseRealtimeChannel = null;
+    state.realtimeTransport = 'local';
+  }
+
+  function handleIncomingRealtimeMessage(msg) {
+    if (!msg || msg.clientId === state.clientId) return;
+    if (msg.type !== 'campaign_saved') return;
+    if (msg.revision && msg.revision === state.lastSeenRevision) return;
+    state.lastSeenRevision = msg.revision || state.lastSeenRevision;
+    const actor = msg.actor ? ` by ${msg.actor}` : '';
+    const conflictMsg = `Updated elsewhere${actor}`;
+    setSyncConflictWarning(true, conflictMsg);
+    setSaveState('error', conflictMsg);
+  }
+
+  function canUseSupabaseRealtime() {
+    const cfg = state.syncConfig || loadSyncConfig();
+    if (!cfg || cfg.transport !== 'supabase') return false;
+    return !!(cfg.supabaseUrl && cfg.supabaseAnonKey && window.SpireOnlineClient && typeof window.SpireOnlineClient.init === 'function');
+  }
+
+  function initSupabaseRealtimeChannel() {
+    if (!state.currentUser || !canUseSupabaseRealtime()) return false;
+    try {
+      const cfg = state.syncConfig || loadSyncConfig();
+      const client = window.SpireOnlineClient.init({
+        url: cfg.supabaseUrl,
+        anonKey: cfg.supabaseAnonKey
+      });
+      if (!client || typeof client.channel !== 'function') return false;
+      const channel = client.channel(`spire-campaigns-${state.currentUser}`);
+      channel
+        .on('broadcast', { event: 'campaign_saved' }, (evt) => {
+          const payload = evt && evt.payload ? evt.payload : null;
+          handleIncomingRealtimeMessage(payload);
+        })
+        .subscribe();
+      state.supabaseRealtimeChannel = channel;
+      state.realtimeTransport = 'supabase';
+      return true;
+    } catch (e) {
+      console.warn('Supabase realtime disabled; falling back to local transport.', e);
+      state.supabaseRealtimeChannel = null;
+      state.realtimeTransport = 'local';
+      return false;
+    }
+  }
+
+  function initRealtimeChannel() {
+    closeRealtimeChannel();
+    if (!state.syncConfig) state.syncConfig = loadSyncConfig();
+    if (!state.currentUser) return;
+    if (initSupabaseRealtimeChannel()) return;
+    if (typeof BroadcastChannel === 'undefined') return;
+    try {
+      const channel = new BroadcastChannel(`spire-realtime-${state.currentUser}`);
+      channel.addEventListener('message', (evt) => {
+        const msg = evt && evt.data ? evt.data : null;
+        handleIncomingRealtimeMessage(msg);
+      });
+      state.realtimeChannel = channel;
+      state.realtimeTransport = 'local';
+    } catch (_) {
+      state.realtimeChannel = null;
+      state.realtimeTransport = 'local';
+    }
+  }
+
+  function broadcastRealtimeUpdate(payload = {}) {
+    const msg = Object.assign({}, payload, { clientId: state.clientId, time: new Date().toISOString() });
+    if (state.realtimeTransport === 'supabase' && state.supabaseRealtimeChannel && typeof state.supabaseRealtimeChannel.send === 'function') {
+      try {
+        state.supabaseRealtimeChannel.send({
+          type: 'broadcast',
+          event: payload.type || 'campaign_saved',
+          payload: msg
+        });
+      } catch (_) {
+        // ignore and fall back to local channel below
+      }
+    }
+    const ch = state.realtimeChannel;
+    if (!ch) return;
+    try {
+      ch.postMessage(msg);
+    } catch (_) {
+      // ignore
+    }
+  }
+
   function saveCampaigns(options = {}) {
     const force = !!options.force;
     if (state.syncConflictActive && !force) {
       state.localEditsSinceConflict = (state.localEditsSinceConflict || 0) + 1;
-      setSyncConflictWarning(true, conflictWarningText());
-      setSaveState('error', 'Sync conflict');
+      const conflictMsg = conflictWarningText();
+      setSyncConflictWarning(true, conflictMsg);
+      setSaveState('error', conflictMsg);
       return false;
     }
     setSaveState('saving');
     try {
+      if (!navigator.onLine) {
+        enqueuePendingSaveOp();
+        setSaveState('error', 'Offline (queued)');
+        return false;
+      }
       if (!state.currentUser) {
         setSaveState('saved');
         return true;
@@ -1092,6 +1680,13 @@
       localStorage.setItem(userScopedKey('spire-campaigns-backup'), serialized);
       localStorage.setItem(userScopedKey('spire-campaigns-backup-ts'), new Date().toISOString());
       syncOwnedSharedInvites();
+      broadcastRealtimeUpdate({
+        type: 'campaign_saved',
+        revision: revisionToken,
+        campaignId: state.currentCampaignId,
+        actor: currentActorLabel(),
+        actorRole: currentActorRole()
+      });
       setSaveState('saved');
       setSyncConflictWarning(false);
       return true;
@@ -1146,6 +1741,14 @@
     return live || entry.targetLabel || '';
   }
 
+  function currentActorLabel() {
+    return state.currentUser || (state.gmMode ? 'GM' : 'Player');
+  }
+
+  function currentActorRole() {
+    return state.gmMode ? 'gm' : 'player';
+  }
+
   function appendLog(action, entityOrRelId, type = 'action') {
     for (const prefix of LOG_STRESS_PREFIXES) {
       if (action.startsWith(prefix)) return;
@@ -1157,6 +1760,8 @@
       action,
       target: entityOrRelId,
       targetLabel,
+      actor: currentActorLabel(),
+      actorRole: currentActorRole(),
       type,
       session: camp.currentSession || 1
     });
@@ -1168,6 +1773,8 @@
       time: new Date().toISOString(),
       action: label,
       target: '',
+      actor: currentActorLabel(),
+      actorRole: currentActorRole(),
       type: 'session',
       session: camp.currentSession || 1
     });
@@ -1183,36 +1790,99 @@
       .slice(0, limit);
   }
 
-  function updateUndoButtonState() {
-    const btn = document.getElementById('undo-btn');
-    if (!btn) return;
-    const camp = currentCampaign();
-    const hasUndo = !!(camp && Array.isArray(camp.undoStack) && camp.undoStack.length);
-    btn.disabled = !hasUndo;
-    btn.title = hasUndo
-      ? `Undo: ${camp.undoStack[camp.undoStack.length - 1].label || 'last action'}`
-      : 'Nothing to undo';
+  function resolveUndoTargetLabel(targetId, camp = currentCampaign()) {
+    if (!targetId || !camp) return '';
+    const ent = camp.entities ? camp.entities[targetId] : null;
+    if (ent) return entityLabel(ent);
+    const rel = camp.relationships ? camp.relationships[targetId] : null;
+    if (rel) {
+      const src = camp.entities[rel.source];
+      const trg = camp.entities[rel.target];
+      return `${entityLabel(src)} -> ${entityLabel(trg)}`;
+    }
+    return '';
   }
 
-  function captureUndoSnapshot(label = 'Change') {
+  function appendGettingStartedHelper(host, key, helpText) {
+    const camp = currentCampaign();
+    if (!host || !camp) return;
+    if (!camp.uiTipsDismissed || typeof camp.uiTipsDismissed !== 'object') camp.uiTipsDismissed = {};
+    const tipKey = `help:${key}`;
+    if (camp.uiTipsDismissed[tipKey]) return;
+    const wrap = document.createElement('details');
+    wrap.className = 'starter-help';
+    const summary = document.createElement('summary');
+    summary.textContent = 'Getting started';
+    const body = document.createElement('p');
+    body.textContent = helpText;
+    const dismiss = document.createElement('button');
+    dismiss.className = 'toolbar-btn';
+    dismiss.textContent = 'Hide this tip';
+    dismiss.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      camp.uiTipsDismissed[tipKey] = true;
+      saveCampaigns();
+      wrap.remove();
+    });
+    wrap.appendChild(summary);
+    wrap.appendChild(body);
+    wrap.appendChild(dismiss);
+    host.appendChild(wrap);
+  }
+
+  function updateUndoButtonState() {
+    const btn = document.getElementById('undo-btn');
+    const camp = currentCampaign();
+    const hasUndo = !!(camp && Array.isArray(camp.undoStack) && camp.undoStack.length);
+    if (btn) {
+      btn.disabled = !hasUndo;
+      btn.title = hasUndo
+        ? `Undo: ${camp.undoStack[camp.undoStack.length - 1].label || 'last action'}`
+        : 'Nothing to undo';
+    }
+    updateRedoButtonState();
+  }
+
+  function updateRedoButtonState() {
+    const btn = document.getElementById('redo-btn');
+    if (!btn) return;
+    const camp = currentCampaign();
+    const hasRedo = !!(camp && Array.isArray(camp.redoStack) && camp.redoStack.length);
+    btn.disabled = !hasRedo;
+    btn.title = hasRedo
+      ? `Redo: ${camp.redoStack[camp.redoStack.length - 1].label || 'last action'}`
+      : 'Nothing to redo';
+  }
+
+  function captureUndoSnapshot(label = 'Change', targetId = '') {
     if (isApplyingUndo) return;
     const camp = currentCampaign();
     if (!camp) return;
     if (!Array.isArray(camp.undoStack)) camp.undoStack = [];
+    if (!Array.isArray(camp.redoStack)) camp.redoStack = [];
     const snapshot = JSON.parse(JSON.stringify(camp));
     snapshot.undoStack = [];
+    snapshot.redoStack = [];
+    const resolvedTarget = targetId || state.selectedEntityId || state.selectedRelId || '';
+    const targetLabel = resolveUndoTargetLabel(resolvedTarget, camp);
     camp.undoStack.push({
       id: generateId('undo'),
       time: new Date().toISOString(),
       label,
+      target: resolvedTarget,
+      targetLabel,
       snapshot
     });
+    // New action invalidates redo history.
+    camp.redoStack = [];
     if (camp.undoStack.length > 20) camp.undoStack.shift();
     updateUndoButtonState();
   }
 
   function ensureRelationshipUndoStore(camp = currentCampaign()) {
     if (!camp.relationshipUndo || typeof camp.relationshipUndo !== 'object') camp.relationshipUndo = {};
+    if (!camp.relationshipRedo || typeof camp.relationshipRedo !== 'object') camp.relationshipRedo = {};
   }
 
   function pushRelationshipUndo(relId, label = 'Edit relationship') {
@@ -1227,6 +1897,8 @@
       label,
       data: JSON.parse(JSON.stringify(rel))
     });
+    // New relationship edit invalidates redo for this relationship.
+    camp.relationshipRedo[relId] = [];
     if (camp.relationshipUndo[relId].length > 30) camp.relationshipUndo[relId].shift();
   }
 
@@ -1241,8 +1913,41 @@
       return;
     }
     const entry = stack.pop();
+    if (!Array.isArray(camp.relationshipRedo[relId])) camp.relationshipRedo[relId] = [];
+    camp.relationshipRedo[relId].push({
+      id: generateId('rredo'),
+      time: new Date().toISOString(),
+      label: entry.label || 'relationship edit',
+      data: JSON.parse(JSON.stringify(rel))
+    });
+    if (camp.relationshipRedo[relId].length > 30) camp.relationshipRedo[relId].shift();
     camp.relationships[relId] = JSON.parse(JSON.stringify(entry.data || rel));
     appendLog('Undid relationship edit', relId);
+    saveAndRefresh();
+    selectRelationship(relId);
+  }
+
+  function redoRelationshipEdit(relId) {
+    const camp = currentCampaign();
+    const rel = camp && camp.relationships ? camp.relationships[relId] : null;
+    if (!camp || !rel) return;
+    ensureRelationshipUndoStore(camp);
+    const redo = camp.relationshipRedo[relId];
+    if (!Array.isArray(redo) || !redo.length) {
+      showToast('No relationship edits to redo.', 'warn');
+      return;
+    }
+    if (!Array.isArray(camp.relationshipUndo[relId])) camp.relationshipUndo[relId] = [];
+    camp.relationshipUndo[relId].push({
+      id: generateId('rundo'),
+      time: new Date().toISOString(),
+      label: redo[redo.length - 1].label || 'relationship edit',
+      data: JSON.parse(JSON.stringify(rel))
+    });
+    if (camp.relationshipUndo[relId].length > 30) camp.relationshipUndo[relId].shift();
+    const entry = redo.pop();
+    camp.relationships[relId] = JSON.parse(JSON.stringify(entry.data || rel));
+    appendLog('Redid relationship edit', relId);
     saveAndRefresh();
     selectRelationship(relId);
   }
@@ -1250,8 +1955,10 @@
   function ensureSectionUndoStore(ent) {
     if (!ent || typeof ent !== 'object') return;
     if (!ent.sectionUndo || typeof ent.sectionUndo !== 'object') ent.sectionUndo = {};
+    if (!ent.sectionRedo || typeof ent.sectionRedo !== 'object') ent.sectionRedo = {};
     ['tasks', 'inventory', 'bonds'].forEach((k) => {
       if (!Array.isArray(ent.sectionUndo[k])) ent.sectionUndo[k] = [];
+      if (!Array.isArray(ent.sectionRedo[k])) ent.sectionRedo[k] = [];
     });
   }
 
@@ -1265,6 +1972,8 @@
       label,
       data: JSON.parse(JSON.stringify(sectionData))
     });
+    // New edit invalidates redo for this section.
+    ent.sectionRedo[sectionKey] = [];
     if (ent.sectionUndo[sectionKey].length > 20) ent.sectionUndo[sectionKey].shift();
   }
 
@@ -1276,6 +1985,14 @@
       showToast(emptyMsg, 'warn');
       return;
     }
+    const currentData = Array.isArray(ent[sectionKey]) ? ent[sectionKey] : [];
+    ent.sectionRedo[sectionKey].push({
+      id: generateId('sredo'),
+      time: new Date().toISOString(),
+      label: stack[stack.length - 1]?.label || 'section edit',
+      data: JSON.parse(JSON.stringify(currentData))
+    });
+    if (ent.sectionRedo[sectionKey].length > 20) ent.sectionRedo[sectionKey].shift();
     const entry = stack.pop();
     ent[sectionKey] = JSON.parse(JSON.stringify(entry.data || []));
     appendLog(`Undid ${sectionKey} change`, ent.id);
@@ -1291,15 +2008,60 @@
     return `Undo: ${last.label || 'last change'}${when ? ` (${when})` : ''}`;
   }
 
+  function redoSection(ent, sectionKey, emptyMsg = 'Nothing to redo.') {
+    if (!ent || !sectionKey) return;
+    ensureSectionUndoStore(ent);
+    const stack = ent.sectionRedo[sectionKey];
+    if (!stack.length) {
+      showToast(emptyMsg, 'warn');
+      return;
+    }
+    const currentData = Array.isArray(ent[sectionKey]) ? ent[sectionKey] : [];
+    ent.sectionUndo[sectionKey].push({
+      id: generateId('sundo'),
+      time: new Date().toISOString(),
+      label: stack[stack.length - 1]?.label || 'section edit',
+      data: JSON.parse(JSON.stringify(currentData))
+    });
+    if (ent.sectionUndo[sectionKey].length > 20) ent.sectionUndo[sectionKey].shift();
+    const entry = stack.pop();
+    ent[sectionKey] = JSON.parse(JSON.stringify(entry.data || []));
+    appendLog(`Redid ${sectionKey} change`, ent.id);
+    saveAndRefresh();
+  }
+
+  function sectionRedoTitle(ent, sectionKey, emptyMsg = 'Nothing to redo.') {
+    ensureSectionUndoStore(ent);
+    const stack = ent.sectionRedo[sectionKey];
+    if (!stack || !stack.length) return emptyMsg;
+    const last = stack[stack.length - 1];
+    const when = last.time ? new Date(last.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    return `Redo: ${last.label || 'last change'}${when ? ` (${when})` : ''}`;
+  }
+
   function undoLastDestructiveAction() {
     const camp = currentCampaign();
     if (!camp || !Array.isArray(camp.undoStack) || !camp.undoStack.length) {
       showToast('Nothing to undo.', 'warn');
       return;
     }
+    if (!Array.isArray(camp.redoStack)) camp.redoStack = [];
+    const currentSnapshot = JSON.parse(JSON.stringify(camp));
+    currentSnapshot.undoStack = [];
+    currentSnapshot.redoStack = [];
     const entry = camp.undoStack.pop();
+    camp.redoStack.push({
+      id: generateId('redo'),
+      time: new Date().toISOString(),
+      label: entry.label || 'last change',
+      target: entry.target || '',
+      targetLabel: entry.targetLabel || '',
+      snapshot: currentSnapshot
+    });
+    if (camp.redoStack.length > 20) camp.redoStack.shift();
     const restored = JSON.parse(JSON.stringify(entry.snapshot || {}));
     restored.undoStack = camp.undoStack.slice();
+    restored.redoStack = camp.redoStack.slice();
     isApplyingUndo = true;
     state.campaigns[state.currentCampaignId] = restored;
     isApplyingUndo = false;
@@ -1307,7 +2069,42 @@
     renderLog();
     renderSessionPrep();
     updateUndoButtonState();
-    showToast(`Undid: ${entry.label || 'last change'}`, 'info');
+    const targetInfo = entry.targetLabel ? ` — ${entry.targetLabel}` : '';
+    showToast(`Undid: ${entry.label || 'last change'}${targetInfo}`, 'info');
+  }
+
+  function redoLastDestructiveAction() {
+    const camp = currentCampaign();
+    if (!camp || !Array.isArray(camp.redoStack) || !camp.redoStack.length) {
+      showToast('Nothing to redo.', 'warn');
+      return;
+    }
+    if (!Array.isArray(camp.undoStack)) camp.undoStack = [];
+    const currentSnapshot = JSON.parse(JSON.stringify(camp));
+    currentSnapshot.undoStack = [];
+    currentSnapshot.redoStack = [];
+    const entry = camp.redoStack.pop();
+    camp.undoStack.push({
+      id: generateId('undo'),
+      time: new Date().toISOString(),
+      label: entry.label || 'redo action',
+      target: entry.target || '',
+      targetLabel: entry.targetLabel || '',
+      snapshot: currentSnapshot
+    });
+    if (camp.undoStack.length > 20) camp.undoStack.shift();
+    const restored = JSON.parse(JSON.stringify(entry.snapshot || {}));
+    restored.undoStack = camp.undoStack.slice();
+    restored.redoStack = camp.redoStack.slice();
+    isApplyingUndo = true;
+    state.campaigns[state.currentCampaignId] = restored;
+    isApplyingUndo = false;
+    saveAndRefresh();
+    renderLog();
+    renderSessionPrep();
+    updateUndoButtonState();
+    const targetInfo = entry.targetLabel ? ` — ${entry.targetLabel}` : '';
+    showToast(`Redid: ${entry.label || 'last change'}${targetInfo}`, 'info');
   }
 
   function deleteEntity(entityId, options = {}) {
@@ -1366,7 +2163,7 @@
       'Delete Entity'
     );
     if (!ok) return;
-    captureUndoSnapshot(`Delete ${ent.type.toUpperCase()} "${entityLabel(ent)}"`);
+    captureUndoSnapshot(`Delete ${ent.type.toUpperCase()} "${entityLabel(ent)}"`, ent.id);
     if (deleteEntity(entityId, { actionLabel })) {
       saveAndRefresh();
     }
@@ -1378,7 +2175,7 @@
     if (!rel) return;
     const ok = await askConfirm('Are you sure you want to delete this relationship?', 'Delete Relationship');
     if (!ok) return;
-    captureUndoSnapshot(`Delete relationship ${rel.type || ''}`.trim());
+    captureUndoSnapshot(`Delete relationship ${rel.type || ''}`.trim(), rel.id);
     if (deleteRelationship(relId, { actionLabel })) {
       saveAndRefresh();
       const inspector = document.getElementById('inspector');
@@ -1770,6 +2567,7 @@
     const sec = document.createElement('div');
     sec.className = 'inspector-section collapsible-section' + (isOpen ? ' open' : ' collapsed');
     sec.dataset.collapseKey = collapseKey;
+    sec.dataset.sectionId = id;
 
     const header = document.createElement('div');
     header.className = 'section-header';
@@ -1885,6 +2683,12 @@
     printBtn.textContent = 'Print';
     printBtn.addEventListener('click', () => printEntitySheet(pc.id));
     titleBtns.appendChild(printBtn);
+    const cardBtn = document.createElement('button');
+    cardBtn.className = 'print-btn';
+    cardBtn.textContent = 'Export ID Card';
+    cardBtn.title = 'Printable portrait and identity card';
+    cardBtn.addEventListener('click', () => exportPCIdentityCard(pc.id));
+    titleBtns.appendChild(cardBtn);
     if (state.gmMode) {
       const printPlayerBtn = document.createElement('button');
       printPlayerBtn.className = 'print-btn';
@@ -1895,6 +2699,32 @@
     }
     title.appendChild(titleBtns);
     container.appendChild(title);
+    const sectionJumpNav = document.createElement('div');
+    sectionJumpNav.className = 'pc-section-nav';
+    [
+      ['identity', 'Identity'],
+      ['stress', 'Stress'],
+      ['fallout', 'Fallout'],
+      ['skills', 'Skills'],
+      ['domains', 'Domains'],
+      ['resistances', 'Resist'],
+      ['bonds', 'Bonds'],
+      ['inventory', 'Inventory'],
+      ['tasks', 'Tasks'],
+      ['history', 'History']
+    ].forEach(([secId, label]) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = label;
+      btn.addEventListener('click', () => {
+        const target = container.querySelector(`[data-section-id="${secId}"]`);
+        if (target && target.scrollIntoView) {
+          target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      });
+      sectionJumpNav.appendChild(btn);
+    });
+    container.appendChild(sectionJumpNav);
 
     // Two-column layout
     const twoCol = document.createElement('div');
@@ -1909,6 +2739,7 @@
     // Identity section (compact width above columns)
     const identity = document.createElement('div');
     identity.className = 'inspector-section pc-identity-section';
+    identity.dataset.sectionId = 'identity';
     identity.innerHTML = `<h3>Identity</h3>`;
     identity.appendChild(createInputField(pc, 'firstName', 'First name'));
     identity.appendChild(createInputField(pc, 'lastName', 'Last name'));
@@ -1974,6 +2805,7 @@
     // Stress section
     const stressSection = document.createElement('div');
     stressSection.className = 'inspector-section';
+    stressSection.dataset.sectionId = 'stress';
     stressSection.innerHTML = '<h3>Stress</h3>';
 
     // Ensure stressSlots and stressFilled exist (migrate old saves gracefully)
@@ -2246,6 +3078,11 @@
       emptyBond.style.fontSize = '0.82rem';
       emptyBond.textContent = 'No bonds yet. Add allies, factions, or personal ties.';
       bondBody.appendChild(emptyBond);
+      appendGettingStartedHelper(
+        bondBody,
+        `pc-bonds:${pc.id}`,
+        'Add one Individual bond (person), one Street bond (community), and one Organisation bond to anchor roleplay choices.'
+      );
     }
     const addBondBtn = document.createElement('button');
     addBondBtn.textContent = '+ Add Bond';
@@ -2262,8 +3099,17 @@
     undoBondBtn.addEventListener('click', () => {
       undoSection(pc, 'bonds', 'No bond changes to undo.');
     });
+    const redoBondBtn = document.createElement('button');
+    redoBondBtn.type = 'button';
+    redoBondBtn.textContent = 'Redo Bonds';
+    redoBondBtn.disabled = !(pc.sectionRedo && pc.sectionRedo.bonds && pc.sectionRedo.bonds.length);
+    redoBondBtn.title = sectionRedoTitle(pc, 'bonds', 'No bond changes to redo.');
+    redoBondBtn.addEventListener('click', () => {
+      redoSection(pc, 'bonds', 'No bond changes to redo.');
+    });
     bondBody.appendChild(addBondBtn);
     bondBody.appendChild(undoBondBtn);
+    bondBody.appendChild(redoBondBtn);
     leftCol.appendChild(bondSec);
 
     // Skills → right col (with Roll buttons and Mastered toggle)
@@ -2319,6 +3165,14 @@
       none.style.fontSize = '0.82rem';
       none.textContent = 'No recent actions recorded for this character.';
       histBody.appendChild(none);
+      const openLogBtn = document.createElement('button');
+      openLogBtn.className = 'toolbar-btn';
+      openLogBtn.textContent = 'Open Activity Log';
+      openLogBtn.addEventListener('click', () => {
+        const logTab = document.querySelector('.tab-link[data-tab="log-view"]');
+        if (logTab) logTab.click();
+      });
+      histBody.appendChild(openLogBtn);
     } else {
       const list = document.createElement('ul');
       list.className = 'entity-history-list';
@@ -2326,7 +3180,9 @@
         const li = document.createElement('li');
         const time = document.createElement('time');
         time.dateTime = entry.time;
-        time.textContent = new Date(entry.time).toLocaleString();
+        const when = entry.time ? new Date(entry.time).toLocaleString() : 'Unknown time';
+        const actor = entry.actor ? ` • ${entry.actor}` : '';
+        time.textContent = when + actor;
         const text = document.createElement('span');
         text.textContent = ' ' + entry.action;
         li.appendChild(time);
@@ -2334,6 +3190,18 @@
         list.appendChild(li);
       });
       histBody.appendChild(list);
+      const openLogBtn = document.createElement('button');
+      openLogBtn.className = 'toolbar-btn';
+      openLogBtn.textContent = 'Open Full Log for This Character';
+      openLogBtn.addEventListener('click', () => {
+        logFilterState.query = entityLabel(pc);
+        const input = document.getElementById('log-search-input');
+        if (input) input.value = logFilterState.query;
+        renderLog();
+        const logTab = document.querySelector('.tab-link[data-tab="log-view"]');
+        if (logTab) logTab.click();
+      });
+      histBody.appendChild(openLogBtn);
     }
     rightCol.appendChild(histSec);
 
@@ -2595,6 +3463,11 @@
       emptyInv.style.fontSize = '0.82rem';
       emptyInv.textContent = 'No inventory yet. Add gear, weapons, and armor.';
       invBody.appendChild(emptyInv);
+      appendGettingStartedHelper(
+        invBody,
+        `pc-inventory:${pc.id}`,
+        'Start with your class kit, then add one personal item and one consumable to cover common scenes.'
+      );
     }
     const addItemBtn = document.createElement('button');
     addItemBtn.textContent = '+ Add Item';
@@ -2612,8 +3485,17 @@
     undoInvBtn.addEventListener('click', () => {
       undoSection(pc, 'inventory', 'No inventory changes to undo.');
     });
+    const redoInvBtn = document.createElement('button');
+    redoInvBtn.type = 'button';
+    redoInvBtn.textContent = 'Redo Inventory';
+    redoInvBtn.disabled = !(pc.sectionRedo && pc.sectionRedo.inventory && pc.sectionRedo.inventory.length);
+    redoInvBtn.title = sectionRedoTitle(pc, 'inventory', 'No inventory changes to redo.');
+    redoInvBtn.addEventListener('click', () => {
+      redoSection(pc, 'inventory', 'No inventory changes to redo.');
+    });
     invBody.appendChild(addItemBtn);
     invBody.appendChild(undoInvBtn);
+    invBody.appendChild(redoInvBtn);
     leftCol.appendChild(invSecEl);
 
     // Tasks → below inventory (left col)
@@ -2685,7 +3567,16 @@
     undoTaskBtn.addEventListener('click', () => {
       undoSection(pc, 'tasks', 'No task changes to undo.');
     });
+    const redoTaskBtn = document.createElement('button');
+    redoTaskBtn.type = 'button';
+    redoTaskBtn.textContent = 'Redo Tasks';
+    redoTaskBtn.disabled = !(pc.sectionRedo && pc.sectionRedo.tasks && pc.sectionRedo.tasks.length);
+    redoTaskBtn.title = sectionRedoTitle(pc, 'tasks', 'No task changes to redo.');
+    redoTaskBtn.addEventListener('click', () => {
+      redoSection(pc, 'tasks', 'No task changes to redo.');
+    });
     taskControls.appendChild(undoTaskBtn);
+    taskControls.appendChild(redoTaskBtn);
     const taskHelpBtn = document.createElement('button');
     taskHelpBtn.type = 'button';
     taskHelpBtn.textContent = '?';
@@ -2723,12 +3614,25 @@
       emptyTask.style.fontSize = '0.82rem';
       emptyTask.textContent = 'No tasks yet. Track objectives, leads, and quests here.';
       taskBody.appendChild(emptyTask);
+      appendGettingStartedHelper(
+        taskBody,
+        `pc-tasks:${pc.id}`,
+        'Create one immediate objective and one longer-term consequence task so the next scene has clear momentum.'
+      );
     } else if (!filteredTasks.length) {
       const emptyFilteredTask = document.createElement('p');
       emptyFilteredTask.className = 'text-muted';
       emptyFilteredTask.style.fontSize = '0.82rem';
       emptyFilteredTask.textContent = 'No tasks match this filter.';
       taskBody.appendChild(emptyFilteredTask);
+      const clearTaskFilterBtn = document.createElement('button');
+      clearTaskFilterBtn.className = 'toolbar-btn';
+      clearTaskFilterBtn.textContent = 'Clear Task Filter';
+      clearTaskFilterBtn.addEventListener('click', () => {
+        campPerm.taskViewByPc[pc.id] = 'all';
+        saveAndRefresh();
+      });
+      taskBody.appendChild(clearTaskFilterBtn);
     }
     const addTaskBtn = document.createElement('button');
     addTaskBtn.textContent = '+ Add Task';
@@ -3055,6 +3959,27 @@
       empty.style.fontSize = '0.82rem';
       empty.textContent = 'No fallout recorded for this NPC.';
       falloutSection.appendChild(empty);
+      appendGettingStartedHelper(
+        falloutSection,
+        `npc-fallout:${npc.id}`,
+        'Use Minor fallout for short complications and Moderate/Severe when the NPC meaningfully changes the scene stakes.'
+      );
+      const quickAdd = document.createElement('button');
+      quickAdd.className = 'toolbar-btn';
+      quickAdd.textContent = 'Create First Fallout';
+      quickAdd.addEventListener('click', () => {
+        npc.fallout.push({
+          id: generateId('fallout'),
+          type: 'Blood',
+          severity: 'Minor',
+          name: '',
+          description: '',
+          timestamp: new Date().toISOString()
+        });
+        appendLog('Added fallout', npc.id);
+        saveAndRefresh();
+      });
+      falloutSection.appendChild(quickAdd);
     }
     const addFalloutBtn = document.createElement('button');
     addFalloutBtn.className = 'section-add-btn';
@@ -3088,6 +4013,29 @@
       empty.style.fontSize = '0.82rem';
       empty.textContent = 'No inventory recorded for this NPC.';
       invSec.appendChild(empty);
+      appendGettingStartedHelper(
+        invSec,
+        `npc-inventory:${npc.id}`,
+        'Add one signature item and one leverage item so this NPC can drive scenes beyond dialogue.'
+      );
+      const quickAddItem = document.createElement('button');
+      quickAddItem.className = 'toolbar-btn';
+      quickAddItem.textContent = 'Add Starter Item';
+      quickAddItem.addEventListener('click', () => {
+        npc.inventory.push({
+          id: generateId('item'),
+          type: 'other',
+          item: '',
+          quantity: 1,
+          tags: [],
+          notes: '',
+          stress: undefined,
+          resistance: undefined
+        });
+        appendLog('Added inventory item', npc.id);
+        saveAndRefresh();
+      });
+      invSec.appendChild(quickAddItem);
     }
     const addItemBtn = document.createElement('button');
     addItemBtn.className = 'section-add-btn';
@@ -3301,12 +4249,18 @@
       }
       memberList.appendChild(li);
     });
-    if (!memberList.children.length) {
+    const noMembers = !memberList.children.length;
+    if (noMembers) {
       const emptyMembers = document.createElement('p');
       emptyMembers.className = 'text-muted';
       emptyMembers.style.fontSize = '0.82rem';
       emptyMembers.textContent = 'No members yet. Add PCs/NPCs below.';
       membersSec.appendChild(emptyMembers);
+      appendGettingStartedHelper(
+        membersSec,
+        `org-members:${org.id}`,
+        'Add at least one visible member and one hidden influencer to make organisation relationships actionable in play.'
+      );
     }
     membersSec.appendChild(memberList);
     // Member add via dropdown
@@ -3341,6 +4295,19 @@
     addMemRow.appendChild(memSelect);
     addMemRow.appendChild(addMemBtn);
     membersSec.appendChild(addMemRow);
+    if (noMembers) {
+      const quickMemberBtn = document.createElement('button');
+      quickMemberBtn.className = 'toolbar-btn';
+      quickMemberBtn.style.marginTop = '6px';
+      quickMemberBtn.textContent = 'Pick First Member';
+      quickMemberBtn.addEventListener('click', () => {
+        memSelect.focus();
+        if (memSelect.options.length > 1 && !memSelect.value) {
+          memSelect.selectedIndex = 1;
+        }
+      });
+      membersSec.appendChild(quickMemberBtn);
+    }
     container.appendChild(membersSec);
     // Notes
     const notesSec = document.createElement('div');
@@ -3422,6 +4389,30 @@
     });
     wrapper.appendChild(input);
     return wrapper;
+  }
+
+  function applyNpcTemplate(npc, templateKey = 'none') {
+    const tpl = getEffectiveNpcTemplates(currentCampaign())[templateKey];
+    if (!npc || !tpl || templateKey === 'none') return;
+    npc.role = tpl.role || npc.role || 'NPC';
+    npc.threatLevel = tpl.threatLevel || npc.threatLevel || 'Minor';
+    npc.disposition = tpl.disposition || npc.disposition || 'Neutral';
+    npc.wants = tpl.wants || npc.wants || '';
+    npc.fears = tpl.fears || npc.fears || '';
+    npc.leverage = tpl.leverage || npc.leverage || '';
+    if (!Array.isArray(npc.inventory)) npc.inventory = [];
+    if (Array.isArray(tpl.inventory) && tpl.inventory.length) {
+      npc.inventory = tpl.inventory.map((item) => ({
+        id: generateId('item'),
+        item: item.item || '',
+        quantity: item.quantity || 1,
+        type: item.type || 'other',
+        stress: item.stress,
+        resistance: item.resistance,
+        tags: Array.isArray(item.tags) ? item.tags.slice() : [],
+        notes: ''
+      }));
+    }
   }
 
   function createHideFromPlayersField(ent) {
@@ -4318,6 +5309,7 @@
 
   function setSaveState(mode = 'saved', message = '') {
     const el = document.getElementById('save-state-indicator');
+    const retryBtn = document.getElementById('save-retry-btn');
     if (!el) return;
     if (saveStateTimer) {
       clearTimeout(saveStateTimer);
@@ -4327,31 +5319,70 @@
     if (mode === 'saving') {
       el.classList.add('state-saving');
       el.textContent = message || 'Saving...';
+      el.title = 'Saving changes to local storage';
+      if (retryBtn) retryBtn.classList.add('hidden');
       return;
     }
     if (mode === 'error') {
       el.classList.add('state-error');
       el.textContent = message || 'Save failed';
+      el.title = message || 'Save failed';
+      if (retryBtn) retryBtn.classList.remove('hidden');
       return;
     }
     el.classList.add('state-saved');
-    el.textContent = message || 'Saved';
+    const stamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    el.textContent = message || `Saved ${stamp}`;
+    el.title = `Last saved at ${stamp}`;
+    if (retryBtn) retryBtn.classList.add('hidden');
     saveStateTimer = setTimeout(() => {
       el.classList.remove('state-saved');
-      el.textContent = 'Saved';
+      el.textContent = `Saved ${stamp}`;
     }, 1500);
+  }
+
+  function formatSyncOpSummary(op) {
+    if (!op || !op.payload) return 'Queued change';
+    const campCount = Object.keys(op.payload.campaigns || {}).length;
+    const active = op.payload.currentCampaignId || 'none';
+    return `${campCount} campaign${campCount === 1 ? '' : 's'} (active: ${active})`;
+  }
+
+  function updateSyncQueueButton() {
+    const btn = document.getElementById('sync-queue-btn');
+    if (!btn) return;
+    const badge = document.getElementById('sync-queue-count');
+    const count = state.currentUser ? loadPendingOps().length : 0;
+    btn.title = count ? `Sync queue (${count} pending)` : 'Sync queue (empty)';
+    btn.classList.toggle('has-pending', count > 0);
+    if (badge) {
+      badge.textContent = String(count);
+      badge.classList.toggle('hidden', count <= 0);
+    }
   }
 
   function setSyncConflictWarning(show, message = 'Updated in another tab') {
     const el = document.getElementById('sync-conflict-indicator');
     const reloadBtn = document.getElementById('sync-reload-btn');
+    const forceBtn = document.getElementById('sync-force-btn');
     state.syncConflictActive = !!show;
     if (!show) state.localEditsSinceConflict = 0;
     if (el) {
       el.textContent = message;
+      el.title = message;
       el.classList.toggle('hidden', !show);
     }
     if (reloadBtn) reloadBtn.classList.toggle('hidden', !show);
+    if (forceBtn) forceBtn.classList.toggle('hidden', !show);
+  }
+
+  function forceOverwriteSave() {
+    const saved = saveCampaigns({ force: true });
+    if (saved) {
+      showToast('Campaign saved (forced overwrite).', 'warn');
+    } else {
+      showToast('Force save failed.', 'warn');
+    }
   }
 
   async function attemptManualSave() {
@@ -4449,6 +5480,113 @@
     content.appendChild(actions);
     overlay.classList.remove('hidden');
     modal.classList.remove('hidden');
+  }
+
+  function openSyncQueueModal() {
+    if (!state.currentUser) return;
+    const overlay = document.getElementById('modal-overlay');
+    const modal = document.getElementById('modal');
+    const content = document.getElementById('modal-content');
+    const titleEl = document.getElementById('modal-title');
+    const ops = loadPendingOps();
+    if (titleEl) titleEl.textContent = `Sync Queue (${ops.length})`;
+    content.innerHTML = '';
+    overlay.classList.remove('hidden');
+    modal.classList.remove('hidden');
+
+    const hint = document.createElement('p');
+    hint.className = 'text-muted';
+    hint.style.marginBottom = '10px';
+    hint.textContent = ops.length
+      ? 'Queued saves were created while offline or blocked by conflict. Retry sync or discard stale items.'
+      : 'No queued save operations.';
+    content.appendChild(hint);
+
+    const list = document.createElement('div');
+    list.className = 'sync-queue-list';
+    const selectedIds = new Set();
+    ops.forEach((op) => {
+      const row = document.createElement('label');
+      row.className = 'sync-queue-row';
+      const chk = document.createElement('input');
+      chk.type = 'checkbox';
+      chk.addEventListener('change', (e) => {
+        if (e.target.checked) selectedIds.add(op.id);
+        else selectedIds.delete(op.id);
+      });
+      const body = document.createElement('div');
+      body.className = 'sync-queue-row-body';
+      const when = document.createElement('div');
+      when.className = 'sync-queue-when';
+      const ts = op.time ? new Date(op.time) : null;
+      when.textContent = ts && !Number.isNaN(ts.getTime()) ? ts.toLocaleString() : 'Unknown time';
+      const meta = document.createElement('div');
+      meta.className = 'sync-queue-meta';
+      const baseRev = op.baseRevision ? `base ${String(op.baseRevision).slice(0, 12)}...` : 'base none';
+      meta.textContent = `${op.kind || 'op'} • ${baseRev}`;
+      const summary = document.createElement('div');
+      summary.className = 'sync-queue-summary';
+      summary.textContent = formatSyncOpSummary(op);
+      body.appendChild(when);
+      body.appendChild(meta);
+      body.appendChild(summary);
+      row.appendChild(chk);
+      row.appendChild(body);
+      list.appendChild(row);
+    });
+    if (ops.length) content.appendChild(list);
+
+    const actions = document.createElement('div');
+    actions.className = 'modal-form';
+    actions.style.display = 'flex';
+    actions.style.gap = '8px';
+    actions.style.marginTop = '10px';
+    actions.style.flexWrap = 'wrap';
+
+    const retryBtn = document.createElement('button');
+    retryBtn.className = 'modal-submit';
+    retryBtn.textContent = 'Retry Sync';
+    retryBtn.disabled = !ops.length;
+    retryBtn.addEventListener('click', () => {
+      const ok = flushPendingSaveOps();
+      if (!ok) {
+        showToast(navigator.onLine ? 'Sync failed. Resolve conflict or discard queued ops.' : 'Still offline. Queue unchanged.', 'warn');
+      } else {
+        showToast('Queued changes synced.', 'info');
+      }
+      openSyncQueueModal();
+    });
+    actions.appendChild(retryBtn);
+
+    const discardSelectedBtn = document.createElement('button');
+    discardSelectedBtn.textContent = 'Discard Selected';
+    discardSelectedBtn.disabled = !ops.length;
+    discardSelectedBtn.addEventListener('click', async () => {
+      if (!selectedIds.size) {
+        showToast('No queued items selected.', 'warn');
+        return;
+      }
+      const ok = await askConfirm(`Discard ${selectedIds.size} queued item(s)?`, 'Discard Queued Items');
+      if (!ok) return;
+      removePendingOpsById(Array.from(selectedIds));
+      showToast('Selected queued items discarded.', 'info');
+      openSyncQueueModal();
+    });
+    actions.appendChild(discardSelectedBtn);
+
+    const discardAllBtn = document.createElement('button');
+    discardAllBtn.className = 'toolbar-btn-danger';
+    discardAllBtn.textContent = 'Discard All';
+    discardAllBtn.disabled = !ops.length;
+    discardAllBtn.addEventListener('click', async () => {
+      const ok = await askConfirm('Discard all queued save operations?', 'Discard Queue');
+      if (!ok) return;
+      savePendingOps([]);
+      showToast('Sync queue cleared.', 'warn');
+      openSyncQueueModal();
+    });
+    actions.appendChild(discardAllBtn);
+    content.appendChild(actions);
   }
 
   let modalDecisionResolver = null;
@@ -4748,18 +5886,39 @@
     showToast(`Fallout triggered (${severity}) — rolled ${roll} vs total stress ${total}.`, 'warn');
   }
 
-  function saveAndRefresh() {
+  function saveAndRefresh(options = {}) {
+    const activeTab = document.querySelector('.tab-link.active')?.dataset?.tab || 'sheets-view';
+    const forceSheetRender = !!options.forceSheetRender;
+    const forceGraphRender = !!options.forceGraphRender;
+    const forceMessagesRender = !!options.forceMessagesRender;
     const sheetBefore = document.getElementById('sheet-container');
     const preservedSheetScroll = sheetBefore && sheetBefore.style.display !== 'none' ? sheetBefore.scrollTop : null;
+    const preservedScrolls = {
+      sidebar: document.getElementById('sidebar')?.scrollTop || 0,
+      logList: document.getElementById('log-list')?.scrollTop || 0,
+      messagesList: document.getElementById('messages-list')?.scrollTop || 0,
+      prep: document.getElementById('session-prep-panel')?.scrollTop || 0
+    };
     saveCampaigns();
     renderEntityLists();
-    renderSheetView();
-    if (preservedSheetScroll !== null) {
-      const sheetAfter = document.getElementById('sheet-container');
-      if (sheetAfter) sheetAfter.scrollTop = preservedSheetScroll;
+    if (forceSheetRender || activeTab === 'sheets-view') {
+      renderSheetView();
+      if (preservedSheetScroll !== null) {
+        const sheetAfter = document.getElementById('sheet-container');
+        if (sheetAfter) sheetAfter.scrollTop = preservedSheetScroll;
+      }
     }
-    updateGraph();
-    renderMessages();
+    if (forceGraphRender || activeTab === 'web-view') updateGraph();
+    if (forceMessagesRender || activeTab === 'messages-view') renderMessages();
+    if (activeTab === 'log-view') renderLog();
+    const sidebarAfter = document.getElementById('sidebar');
+    if (sidebarAfter) sidebarAfter.scrollTop = preservedScrolls.sidebar;
+    const logAfter = document.getElementById('log-list');
+    if (logAfter) logAfter.scrollTop = preservedScrolls.logList;
+    const msgAfter = document.getElementById('messages-list');
+    if (msgAfter) msgAfter.scrollTop = preservedScrolls.messagesList;
+    const prepAfter = document.getElementById('session-prep-panel');
+    if (prepAfter) prepAfter.scrollTop = preservedScrolls.prep;
     updatePendingBadge();
     updatePlayerPCButtonState();
     updateFocusToggleUI();
@@ -4767,6 +5926,7 @@
     updateUndoButtonState();
     ensureAutoGrowTextareas(document);
     ensureAccessibilityLabels(document);
+    ensureAccessibilitySemantics();
   }
 
   function saveWithoutRefresh() {
@@ -4778,6 +5938,7 @@
     updateUndoButtonState();
     ensureAutoGrowTextareas(document);
     ensureAccessibilityLabels(document);
+    ensureAccessibilitySemantics();
     flashSavedSection();
   }
 
@@ -4858,6 +6019,32 @@
         if (text) el.setAttribute('aria-label', text);
       }
     });
+  }
+
+  function ensureAccessibilitySemantics() {
+    const tabWrap = document.querySelector('#top-nav .nav-middle');
+    if (tabWrap) tabWrap.setAttribute('role', 'tablist');
+    document.querySelectorAll('.tab-link').forEach((btn) => {
+      const targetId = btn.dataset.tab;
+      if (!targetId) return;
+      const isActive = btn.classList.contains('active');
+      btn.setAttribute('role', 'tab');
+      btn.setAttribute('aria-controls', targetId);
+      btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+      btn.setAttribute('tabindex', isActive ? '0' : '-1');
+      const panel = document.getElementById(targetId);
+      if (panel) {
+        panel.setAttribute('role', 'tabpanel');
+        panel.setAttribute('aria-hidden', isActive ? 'false' : 'true');
+      }
+    });
+    const modal = document.getElementById('modal');
+    const modalTitle = document.getElementById('modal-title');
+    if (modal) {
+      modal.setAttribute('role', 'dialog');
+      modal.setAttribute('aria-modal', 'true');
+      if (modalTitle && modalTitle.id) modal.setAttribute('aria-labelledby', modalTitle.id);
+    }
   }
 
   function ensureGraphViews(camp = currentCampaign()) {
@@ -5127,6 +6314,26 @@
   // Web filter state: which entity types to show
   const webFilter = { pc: true, npc: true, org: true, secrets: true };
 
+  function updateWebLegendMeta(camp, stats = {}) {
+    const lineEl = document.getElementById('legend-semantic-line');
+    const visEl = document.getElementById('legend-semantic-visibility');
+    const relHint = document.getElementById('web-rel-hint');
+    if (!camp) return;
+    if (lineEl) {
+      lineEl.textContent = `Line width: default 2px, selected 3px. Directed links show arrowheads. Focus mode ${graphState.focusMode ? 'de-emphasizes non-neighbors' : 'is off'}.`;
+    }
+    if (visEl) {
+      const hiddenEntities = Math.max(0, (stats.totalEntities || 0) - (stats.visibleEntities || 0));
+      const hiddenRelationships = Math.max(0, (stats.totalRelationships || 0) - (stats.visibleRelationships || 0));
+      visEl.textContent = `Visibility: showing ${stats.visibleEntities || 0}/${stats.totalEntities || 0} entities and ${stats.visibleRelationships || 0}/${stats.totalRelationships || 0} relationships. Hidden now: ${hiddenEntities} entities, ${hiddenRelationships} relationships.`;
+    }
+    if (relHint) {
+      relHint.textContent = (stats.visibleRelationships || 0) > 0
+        ? `Current web: ${stats.visibleRelationships} visible links. Tip: double-click a node to open its sheet.`
+        : 'Tip: add relationships to show edges between entities.';
+    }
+  }
+
   function updateGraph() {
     const camp = currentCampaign();
     graphNodes = [];
@@ -5136,6 +6343,14 @@
     const pcColor = getComputedStyle(document.documentElement).getPropertyValue('--pc-color').trim();
     const npcColor = getComputedStyle(document.documentElement).getPropertyValue('--npc-color').trim();
     const orgColor = getComputedStyle(document.documentElement).getPropertyValue('--org-color').trim();
+    const entityPool = Object.values(camp.entities).filter((ent) => {
+      if (!state.gmMode && ent.gmOnly) return false;
+      return true;
+    });
+    const relPool = Object.values(camp.relationships).filter((rel) => {
+      if (!state.gmMode && rel.secret) return false;
+      return true;
+    });
     // Build node list
     Object.values(camp.entities).forEach(ent => {
       if (!state.gmMode && ent.gmOnly) return;
@@ -5196,8 +6411,58 @@
           : 'No visible entities in the web yet.';
         emptyEl.appendChild(icon);
         emptyEl.appendChild(text);
+        if (state.gmMode) {
+          const actions = document.createElement('div');
+          actions.className = 'graph-empty-actions';
+          const filtersActive = !webFilter.pc || !webFilter.npc || !webFilter.org || !webFilter.secrets;
+          if (filtersActive) {
+            const clearFiltersBtn = document.createElement('button');
+            clearFiltersBtn.className = 'toolbar-btn';
+            clearFiltersBtn.textContent = 'Clear Web Filters';
+            clearFiltersBtn.addEventListener('click', () => {
+              webFilter.pc = true;
+              webFilter.npc = true;
+              webFilter.org = true;
+              webFilter.secrets = true;
+              syncWebFilterPills();
+              updateGraph();
+            });
+            actions.appendChild(clearFiltersBtn);
+          }
+          const addPcBtn = document.createElement('button');
+          addPcBtn.className = 'toolbar-btn';
+          addPcBtn.textContent = 'Add PC';
+          addPcBtn.addEventListener('click', () => {
+            const btn = document.getElementById('add-pc-btn');
+            if (btn) btn.click();
+          });
+          const addNpcBtn = document.createElement('button');
+          addNpcBtn.className = 'toolbar-btn';
+          addNpcBtn.textContent = 'Add NPC';
+          addNpcBtn.addEventListener('click', () => {
+            const btn = document.getElementById('add-npc-btn');
+            if (btn) btn.click();
+          });
+          const addOrgBtn = document.createElement('button');
+          addOrgBtn.className = 'toolbar-btn';
+          addOrgBtn.textContent = 'Add Org';
+          addOrgBtn.addEventListener('click', () => {
+            const btn = document.getElementById('add-org-btn');
+            if (btn) btn.click();
+          });
+          actions.appendChild(addPcBtn);
+          actions.appendChild(addNpcBtn);
+          actions.appendChild(addOrgBtn);
+          emptyEl.appendChild(actions);
+        }
       }
     }
+    updateWebLegendMeta(camp, {
+      totalEntities: entityPool.length,
+      visibleEntities: graphNodes.length,
+      totalRelationships: relPool.length,
+      visibleRelationships: graphEdges.length
+    });
   }
 
   /* -----------------------------------------------------------------------
@@ -5997,6 +7262,101 @@
     falloutField.appendChild(falloutLabel);
     falloutField.appendChild(falloutSelect);
     content.appendChild(falloutField);
+
+    // Bond/social consequence workflow helper.
+    const sourcePc = src && src.type === 'pc' ? src : null;
+    const targetPc = trg && trg.type === 'pc' ? trg : null;
+    const candidatePcs = [sourcePc, targetPc].filter(Boolean);
+    const consequenceField = document.createElement('div');
+    consequenceField.className = 'inspector-field';
+    consequenceField.classList.add('consequence-helper-field');
+    const consequenceLabel = document.createElement('label');
+    consequenceLabel.textContent = 'Consequence Helper';
+    consequenceField.appendChild(consequenceLabel);
+
+    const consequenceType = document.createElement('select');
+    [
+      { value: 'bond-fallout', label: 'Add Bond Fallout' },
+      { value: 'social-stress', label: 'Apply Social Stress' },
+      { value: 'followup-task', label: 'Create Follow-up Task' }
+    ].forEach((optDef) => {
+      const opt = document.createElement('option');
+      opt.value = optDef.value;
+      opt.textContent = optDef.label;
+      consequenceType.appendChild(opt);
+    });
+    consequenceField.appendChild(consequenceType);
+
+    const targetSelect = document.createElement('select');
+    if (!candidatePcs.length) {
+      const opt = document.createElement('option');
+      opt.value = '';
+      opt.textContent = 'No PC on this relationship';
+      targetSelect.appendChild(opt);
+      targetSelect.disabled = true;
+    } else {
+      candidatePcs.forEach((pcEnt) => {
+        const opt = document.createElement('option');
+        opt.value = pcEnt.id;
+        opt.textContent = entityLabel(pcEnt);
+        targetSelect.appendChild(opt);
+      });
+    }
+    consequenceField.appendChild(targetSelect);
+
+    const trackSelect = document.createElement('select');
+    ['Mind', 'Shadow', 'Reputation', 'Silver'].forEach((track) => {
+      const opt = document.createElement('option');
+      opt.value = track;
+      opt.textContent = track;
+      trackSelect.appendChild(opt);
+    });
+    consequenceField.appendChild(trackSelect);
+
+    const amountInput = document.createElement('input');
+    amountInput.type = 'number';
+    amountInput.min = '1';
+    amountInput.max = '10';
+    amountInput.value = '1';
+    amountInput.placeholder = 'Amount';
+    consequenceField.appendChild(amountInput);
+
+    const detailInput = document.createElement('input');
+    detailInput.type = 'text';
+    detailInput.placeholder = 'Optional detail/note';
+    consequenceField.appendChild(detailInput);
+
+    const applyConsequenceBtn = document.createElement('button');
+    applyConsequenceBtn.textContent = 'Apply Consequence';
+    applyConsequenceBtn.className = 'toolbar-btn';
+    applyConsequenceBtn.disabled = !candidatePcs.length;
+    applyConsequenceBtn.addEventListener('click', () => {
+      if (!targetSelect.value) return;
+      const ok = applyRelationshipConsequence(rel, {
+        kind: consequenceType.value,
+        targetId: targetSelect.value,
+        track: trackSelect.value,
+        amount: amountInput.value,
+        severity: falloutSelect.value,
+        detail: detailInput.value
+      });
+      if (!ok) return;
+      showToast('Relationship consequence applied.', 'info');
+      saveAndRefresh();
+    });
+    consequenceField.appendChild(applyConsequenceBtn);
+
+    const syncConsequenceFieldState = () => {
+      const type = consequenceType.value;
+      const needsTrack = type === 'bond-fallout' || type === 'social-stress';
+      const needsAmount = type === 'social-stress';
+      trackSelect.style.display = needsTrack ? '' : 'none';
+      amountInput.style.display = needsAmount ? '' : 'none';
+    };
+    consequenceType.addEventListener('change', syncConsequenceFieldState);
+    syncConsequenceFieldState();
+    content.appendChild(consequenceField);
+
     // Notes
     const notesField = document.createElement('div');
     notesField.className = 'inspector-field';
@@ -6035,6 +7395,21 @@
       undoRelationshipEdit(rel.id);
     });
     actions.appendChild(undoBtn);
+    const redoBtn = document.createElement('button');
+    redoBtn.textContent = 'Redo Relationship Edit';
+    const relRedoStack = (currentCampaign().relationshipRedo && currentCampaign().relationshipRedo[rel.id]) || [];
+    redoBtn.disabled = !(Array.isArray(relRedoStack) && relRedoStack.length);
+    if (Array.isArray(relRedoStack) && relRedoStack.length) {
+      const last = relRedoStack[relRedoStack.length - 1];
+      const when = last.time ? new Date(last.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+      redoBtn.title = `Redo: ${last.label || 'last relationship edit'}${when ? ` (${when})` : ''}`;
+    } else {
+      redoBtn.title = 'No relationship edits to redo.';
+    }
+    redoBtn.addEventListener('click', () => {
+      redoRelationshipEdit(rel.id);
+    });
+    actions.appendChild(redoBtn);
     const deleteBtn = document.createElement('button');
     deleteBtn.textContent = 'Delete Relationship';
     deleteBtn.addEventListener('click', async () => {
@@ -6071,6 +7446,185 @@
     });
     if (!anyTasks) tasksDiv.innerHTML += '<p style="color:var(--spire-dim);font-size:0.82rem">No open tasks.</p>';
     return tasksDiv;
+  }
+
+  function deriveAutomationSuggestions(camp, stats = {}) {
+    const session = camp.currentSession || 1;
+    const recent = (camp.logs || [])
+      .filter((e) => (e.session || 1) === session && e.type !== 'session')
+      .slice(-80);
+    const hasClockNamed = (pattern) => (camp.clocks || []).some((c) => pattern.test(String(c.name || '')));
+    const suggestions = [];
+
+    const consequenceActions = recent.filter((e) => /Applied social consequence stress|Applied bond fallout|Resolved fallout/.test(e.action || ''));
+    const memberActions = recent.filter((e) => /Added member|Removed member/.test(e.action || ''));
+    const relEdits = recent.filter((e) => /Edited relationship type|Edited relationship direction|Edited awareness|Edited secrecy|Added relationship|Deleted relationship/.test(e.action || ''));
+    const falloutAdds = recent.filter((e) => /Added fallout|Fallout triggered/.test(e.action || ''));
+    const taskSpikes = recent.filter((e) => /Added task|Edited task|Cleared done tasks/.test(e.action || ''));
+
+    if ((stats.pendingFalloutCount || 0) >= 3 && !hasClockNamed(/fallout aftermath/i)) {
+      suggestions.push({
+        key: 'clock-fallout-aftermath',
+        text: 'Multiple unresolved fallout entries detected. Track fallout cleanup with a dedicated clock.',
+        cta: 'Create Fallout Clock',
+        action: { type: 'create-clock', name: 'Fallout Aftermath', size: 6 }
+      });
+    }
+
+    if ((stats.highStressPcCount || 0) >= 2) {
+      suggestions.push({
+        key: 'raise-ministry',
+        text: 'Two or more PCs are in high-stress range. Escalate external pressure to keep pacing coherent.',
+        cta: 'Increase Ministry',
+        action: { type: 'raise-ministry', amount: 1 }
+      });
+    }
+
+    if ((stats.openTasksCount || 0) >= 6 && !hasClockNamed(/operation pressure/i)) {
+      suggestions.push({
+        key: 'clock-operation-pressure',
+        text: 'Large open task backlog suggests unresolved fronts. Use an operation pressure clock.',
+        cta: 'Add Pressure Clock',
+        action: { type: 'create-clock', name: 'Operation Pressure', size: 8 }
+      });
+    }
+
+    if ((relEdits.length >= 3 || memberActions.length > 0) && !hasClockNamed(/faction backlash|faction response/i)) {
+      suggestions.push({
+        key: 'clock-faction-backlash',
+        text: 'Recent relationship/member changes likely alter faction posture. Track response with a faction backlash clock.',
+        cta: 'Add Faction Clock',
+        action: { type: 'create-clock', name: 'Faction Backlash', size: 6 }
+      });
+    }
+
+    if (consequenceActions.length > 0 || memberActions.length > 0 || relEdits.length > 0) {
+      suggestions.push({
+        key: 'review-web',
+        text: 'Recent consequence and relationship activity suggests the conspiracy web needs updates.',
+        cta: 'Open Web',
+        action: { type: 'open-web' }
+      });
+    }
+
+    if (falloutAdds.length >= 2 && !hasClockNamed(/medical|recovery|downtime/i)) {
+      suggestions.push({
+        key: 'clock-recovery',
+        text: 'Fallout has stacked quickly this session. Add a recovery clock to pace downtime and treatment.',
+        cta: 'Add Recovery Clock',
+        action: { type: 'create-clock', name: 'Recovery Pressure', size: 4 }
+      });
+    }
+
+    if (taskSpikes.length >= 5 && !hasClockNamed(/complication queue|consequence queue/i)) {
+      suggestions.push({
+        key: 'clock-complications',
+        text: 'Task churn is high; convert unresolved items into a visible consequence queue.',
+        cta: 'Add Complication Clock',
+        action: { type: 'create-clock', name: 'Complication Queue', size: 6 }
+      });
+    }
+
+    return suggestions.slice(0, 6);
+  }
+
+  function buildSessionSuggestionsPrepSection(camp, stats = {}) {
+    const section = document.createElement('div');
+    section.className = 'prep-section';
+    section.innerHTML = '<strong>Suggested Updates</strong>';
+
+    const suggestions = deriveAutomationSuggestions(camp, stats);
+
+    if (!suggestions.length) {
+      const p = document.createElement('p');
+      p.className = 'text-muted';
+      p.style.fontSize = '0.82rem';
+      p.textContent = 'No immediate automation suggestions. Current state looks stable.';
+      section.appendChild(p);
+      return section;
+    }
+
+    function applySuggestionAction(action, options = {}) {
+      const safeOnly = !!options.safeOnly;
+      if (!action || !action.type) return { applied: false, skipped: true };
+      if (safeOnly && action.type === 'raise-ministry') return { applied: false, skipped: true };
+      if (action.type === 'create-clock') {
+        const name = action.name || 'New Clock';
+        const exists = (camp.clocks || []).some((c) => String(c.name || '').toLowerCase() === String(name).toLowerCase());
+        if (exists) return { applied: false, skipped: true };
+        camp.clocks.push({ id: generateId('clock'), name, current: 0, size: Number(action.size) || 6 });
+        appendLog('Added clock', '');
+        return { applied: true };
+      }
+      if (action.type === 'raise-ministry') {
+        camp.ministryAttention = Math.min(10, (camp.ministryAttention || 0) + (Number(action.amount) || 1));
+        appendLog('Adjusted ministry attention', '');
+        return { applied: true };
+      }
+      if (action.type === 'open-web') {
+        const webTab = document.querySelector('.tab-link[data-tab="web-view"]');
+        if (webTab) webTab.click();
+        return { applied: true };
+      }
+      return { applied: false, skipped: true };
+    }
+
+    const batchRow = document.createElement('div');
+    batchRow.className = 'prep-task-row';
+    batchRow.style.justifyContent = 'flex-end';
+    batchRow.style.marginBottom = '6px';
+    const safeBtn = document.createElement('button');
+    safeBtn.className = 'toolbar-btn';
+    safeBtn.textContent = 'Apply All Safe';
+    safeBtn.title = 'Applies safe suggestions only (creates clocks and opens web; skips ministry escalation)';
+    safeBtn.addEventListener('click', () => {
+      let applied = 0;
+      suggestions.forEach((s) => {
+        const result = applySuggestionAction(s.action || {}, { safeOnly: true });
+        if (result.applied) applied += 1;
+      });
+      saveCampaigns();
+      renderSessionPrep();
+      if (applied > 0) showToast(`Applied ${applied} safe suggestion${applied === 1 ? '' : 's'}.`, 'info');
+      else showToast('No safe suggestions to apply.', 'info');
+    });
+    batchRow.appendChild(safeBtn);
+    section.appendChild(batchRow);
+
+    suggestions.forEach((s) => {
+      const row = document.createElement('div');
+      row.className = 'prep-task-row';
+      row.style.alignItems = 'center';
+      row.style.justifyContent = 'space-between';
+      const txt = document.createElement('span');
+      txt.textContent = s.text;
+      const btn = document.createElement('button');
+      btn.className = 'toolbar-btn';
+      btn.textContent = s.cta;
+      btn.addEventListener('click', () => {
+        const result = applySuggestionAction(s.action || {}, { safeOnly: false });
+        if (!result.applied) {
+          showToast('Suggestion already satisfied.', 'info');
+          return;
+        }
+        saveCampaigns();
+        renderSessionPrep();
+      });
+      row.appendChild(txt);
+      row.appendChild(btn);
+      section.appendChild(row);
+    });
+    return section;
+  }
+
+  function generateScenePromptData() {
+    const pools = getEffectiveScenePromptPools(currentCampaign());
+    return {
+      complication: randomFrom(pools.complications),
+      factionReaction: randomFrom(pools.factionReactions),
+      twist: randomFrom(pools.twists),
+      time: new Date().toISOString()
+    };
   }
 
   function renderSessionPrep() {
@@ -6152,6 +7706,57 @@
         Pending fallout: ${pendingFalloutCount} | High-stress PCs: ${highStressPcCount} | Open tasks: ${openTasksCount} | Active clocks: ${activeClockCount}
       </div>`;
     prepEl.appendChild(summary);
+    prepEl.appendChild(buildSessionSuggestionsPrepSection(camp, {
+      pendingFalloutCount,
+      highStressPcCount,
+      openTasksCount,
+      activeClockCount
+    }));
+    if (!camp.lastScenePrompt) camp.lastScenePrompt = null;
+    const sceneDiv = document.createElement('div');
+    sceneDiv.className = 'prep-section';
+    sceneDiv.innerHTML = '<strong>Scene Prompt</strong>';
+    const sceneText = document.createElement('div');
+    sceneText.style.fontSize = '0.84rem';
+    sceneText.style.color = 'var(--spire-muted)';
+    sceneText.style.marginTop = '6px';
+    if (camp.lastScenePrompt) {
+      sceneText.innerHTML = `Complication: ${camp.lastScenePrompt.complication}<br>Faction reaction: ${camp.lastScenePrompt.factionReaction}<br>Twist: ${camp.lastScenePrompt.twist}`;
+    } else {
+      sceneText.textContent = 'No prompt generated yet.';
+    }
+    const sceneBtnRow = document.createElement('div');
+    sceneBtnRow.style.display = 'flex';
+    sceneBtnRow.style.gap = '6px';
+    sceneBtnRow.style.marginTop = '8px';
+    const genSceneBtn = document.createElement('button');
+    genSceneBtn.className = 'toolbar-btn';
+    genSceneBtn.textContent = camp.lastScenePrompt ? 'Reroll Prompt' : 'Generate Prompt';
+    genSceneBtn.addEventListener('click', () => {
+      camp.lastScenePrompt = generateScenePromptData();
+      appendLog('Generated scene prompt', '');
+      saveCampaigns();
+      renderSessionPrep();
+    });
+    sceneBtnRow.appendChild(genSceneBtn);
+    if (camp.lastScenePrompt) {
+      const copyBtn = document.createElement('button');
+      copyBtn.className = 'toolbar-btn';
+      copyBtn.textContent = 'Copy';
+      copyBtn.addEventListener('click', async () => {
+        const text = `Complication: ${camp.lastScenePrompt.complication}\nFaction reaction: ${camp.lastScenePrompt.factionReaction}\nTwist: ${camp.lastScenePrompt.twist}`;
+        try {
+          if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+          showToast('Scene prompt copied.', 'info');
+        } catch (_) {
+          showToast('Could not copy scene prompt.', 'warn');
+        }
+      });
+      sceneBtnRow.appendChild(copyBtn);
+    }
+    sceneDiv.appendChild(sceneText);
+    sceneDiv.appendChild(sceneBtnRow);
+    prepEl.appendChild(sceneDiv);
     if (tasksOnlyMode) {
       prepEl.appendChild(buildOpenTasksPrepSection(pcs));
       return;
@@ -6163,6 +7768,15 @@
     stressDiv.innerHTML = '<strong>Party Stress</strong>';
     if (pcs.length === 0) {
       stressDiv.innerHTML += '<p style="color:var(--spire-dim);font-size:0.82rem">No PCs yet.</p>';
+      const addPcBtn = document.createElement('button');
+      addPcBtn.className = 'toolbar-btn';
+      addPcBtn.style.marginTop = '6px';
+      addPcBtn.textContent = 'Create First PC';
+      addPcBtn.addEventListener('click', () => {
+        const addBtn = document.getElementById('add-pc-btn');
+        if (addBtn) addBtn.click();
+      });
+      stressDiv.appendChild(addPcBtn);
     } else {
       pcs.forEach(pc => {
         const pcRow = document.createElement('div');
@@ -6333,6 +7947,8 @@
 
   function syncLogFilterControls(camp) {
     const sessionSelect = document.getElementById('log-session-filter');
+    const actorSelect = document.getElementById('log-actor-filter');
+    const typeSelect = document.getElementById('log-type-filter');
     const searchInput = document.getElementById('log-search-input');
     if (searchInput) searchInput.value = logFilterState.query || '';
     if (!sessionSelect) return;
@@ -6354,6 +7970,27 @@
       sessionSelect.appendChild(opt);
     });
     sessionSelect.value = logFilterState.session;
+
+    if (actorSelect) {
+      const actors = Array.from(new Set((camp.logs || []).map((e) => String(e.actor || '').trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+      const opts = ['all', ...actors];
+      if (!opts.includes(logFilterState.actor)) logFilterState.actor = 'all';
+      actorSelect.innerHTML = '';
+      const allActor = document.createElement('option');
+      allActor.value = 'all';
+      allActor.textContent = 'All actors';
+      actorSelect.appendChild(allActor);
+      actors.forEach((a) => {
+        const opt = document.createElement('option');
+        opt.value = a;
+        opt.textContent = a;
+        actorSelect.appendChild(opt);
+      });
+      actorSelect.value = logFilterState.actor || 'all';
+    }
+    if (typeSelect) {
+      typeSelect.value = logFilterState.actionType || 'all';
+    }
   }
 
   function renderLog() {
@@ -6363,17 +8000,33 @@
     syncLogFilterControls(camp);
     const query = (logFilterState.query || '').trim().toLowerCase();
     const selectedSession = logFilterState.session || 'all';
-    camp.logs.slice().reverse().forEach(entry => {
+    const selectedActor = logFilterState.actor || 'all';
+    const selectedType = logFilterState.actionType || 'all';
+    const filtered = camp.logs.slice().reverse().filter((entry) => {
       const ent = camp.entities[entry.target] || camp.relationships[entry.target];
       if (!state.gmMode) {
-        if (ent && ent.gmOnly) return;
-        if (ent && ent.secret) return;
+        if (ent && ent.gmOnly) return false;
+        if (ent && ent.secret) return false;
       }
-      if (selectedSession !== 'all' && String(entry.session || 1) !== selectedSession) return;
+      if (selectedSession !== 'all' && String(entry.session || 1) !== selectedSession) return false;
+      if (selectedActor !== 'all' && String(entry.actor || '') !== selectedActor) return false;
+      if (selectedType !== 'all' && String(entry.type || 'action') !== selectedType) return false;
       const targetLabel = resolveLogTargetLabel(camp, entry);
-      const searchable = `${entry.action || ''} ${targetLabel} ${(entry.type || '')}`.toLowerCase();
-      if (query && !searchable.includes(query)) return;
+      const actorLabel = entry.actor || '';
+      const searchable = `${entry.action || ''} ${targetLabel} ${(entry.type || '')} ${actorLabel}`.toLowerCase();
+      if (query && !searchable.includes(query)) return false;
+      return true;
+    });
+    const pageSize = Math.max(10, parseInt(logFilterState.pageSize, 10) || 50);
+    logFilterState.pageSize = pageSize;
+    const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+    logFilterState.page = Math.min(totalPages, Math.max(1, parseInt(logFilterState.page, 10) || 1));
+    const start = (logFilterState.page - 1) * pageSize;
+    const pageEntries = filtered.slice(start, start + pageSize);
+
+    pageEntries.forEach(entry => {
       const li = document.createElement('li');
+      const targetLabel = resolveLogTargetLabel(camp, entry);
       if (entry.type === 'session') {
         li.className = 'log-session-divider';
         li.textContent = entry.action;
@@ -6393,14 +8046,229 @@
         sess.textContent = 'S' + entry.session;
         li.appendChild(sess);
       }
+      if (entry.actor) {
+        const actor = document.createElement('span');
+        actor.className = 'log-actor-tag';
+        actor.textContent = entry.actorRole === 'gm' ? `GM:${entry.actor}` : entry.actor;
+        li.appendChild(actor);
+      }
       const span = document.createElement('span');
       span.textContent = ' ' + entry.action + (targetLabel ? ' — ' + targetLabel : '');
       li.appendChild(span);
+      const targetEnt = entry.target ? camp.entities[entry.target] : null;
+      const targetRel = entry.target ? camp.relationships[entry.target] : null;
+      if (targetEnt || targetRel) {
+        const jumpBtn = document.createElement('button');
+        jumpBtn.className = 'toolbar-btn log-jump-btn';
+        jumpBtn.textContent = 'Jump';
+        jumpBtn.addEventListener('click', (e) => e.stopPropagation());
+        jumpBtn.addEventListener('click', () => {
+          if (targetEnt) {
+            selectEntity(targetEnt.id);
+            const sheetsTab = document.querySelector('.tab-link[data-tab="sheets-view"]');
+            if (sheetsTab) sheetsTab.click();
+            return;
+          }
+          if (targetRel) {
+            const webTab = document.querySelector('.tab-link[data-tab="web-view"]');
+            if (webTab) webTab.click();
+            selectRelationship(targetRel.id);
+          }
+        });
+        li.appendChild(jumpBtn);
+      }
+      li.addEventListener('click', () => openLogEntryDetailModal(entry, targetLabel));
       logList.appendChild(li);
     });
+    renderLogPagination(filtered.length, totalPages);
     // Show empty state
     const empty = document.getElementById('log-empty');
-    if (empty) empty.classList.toggle('hidden', logList.children.length > 0);
+    if (empty) {
+      const noEntries = logList.children.length === 0;
+      empty.classList.toggle('hidden', !noEntries);
+      if (noEntries) {
+        empty.innerHTML = '';
+        const icon = document.createElement('span');
+        icon.className = 'material-icons';
+        icon.textContent = 'history';
+        const p = document.createElement('p');
+        const hasFilter = !!query || selectedSession !== 'all' || selectedActor !== 'all' || selectedType !== 'all';
+        p.textContent = hasFilter
+          ? 'No log entries match these filters.'
+          : 'No activity yet. Edit a sheet, web relation, or message to create history.';
+        empty.appendChild(icon);
+        empty.appendChild(p);
+        if (hasFilter) {
+          const clearBtn = document.createElement('button');
+          clearBtn.className = 'toolbar-btn';
+          clearBtn.textContent = 'Clear Filters';
+          clearBtn.addEventListener('click', () => {
+            logFilterState.query = '';
+            logFilterState.session = 'all';
+            logFilterState.actor = 'all';
+            logFilterState.actionType = 'all';
+            logFilterState.page = 1;
+            renderLog();
+          });
+          empty.appendChild(clearBtn);
+        }
+      }
+    }
+  }
+
+  function toCsvCell(value) {
+    const v = value == null ? '' : String(value);
+    if (/[",\n]/.test(v)) return `"${v.replace(/"/g, '""')}"`;
+    return v;
+  }
+
+  function exportFilteredLogCsv() {
+    const camp = currentCampaign();
+    const query = (logFilterState.query || '').trim().toLowerCase();
+    const selectedSession = logFilterState.session || 'all';
+    const selectedActor = logFilterState.actor || 'all';
+    const selectedType = logFilterState.actionType || 'all';
+    const rows = (camp.logs || []).filter((entry) => {
+      const ent = camp.entities[entry.target] || camp.relationships[entry.target];
+      if (!state.gmMode) {
+        if (ent && ent.gmOnly) return false;
+        if (ent && ent.secret) return false;
+      }
+      if (selectedSession !== 'all' && String(entry.session || 1) !== selectedSession) return false;
+      if (selectedActor !== 'all' && String(entry.actor || '') !== selectedActor) return false;
+      if (selectedType !== 'all' && String(entry.type || 'action') !== selectedType) return false;
+      const targetLabel = resolveLogTargetLabel(camp, entry);
+      const actorLabel = entry.actor || '';
+      const searchable = `${entry.action || ''} ${targetLabel} ${(entry.type || '')} ${actorLabel}`.toLowerCase();
+      if (query && !searchable.includes(query)) return false;
+      return true;
+    });
+    const header = ['time', 'session', 'type', 'actor', 'actorRole', 'action', 'targetId', 'targetLabel'];
+    const lines = [header.join(',')];
+    rows.forEach((entry) => {
+      lines.push([
+        toCsvCell(entry.time || ''),
+        toCsvCell(entry.session || ''),
+        toCsvCell(entry.type || ''),
+        toCsvCell(entry.actor || ''),
+        toCsvCell(entry.actorRole || ''),
+        toCsvCell(entry.action || ''),
+        toCsvCell(entry.target || ''),
+        toCsvCell(resolveLogTargetLabel(camp, entry))
+      ].join(','));
+    });
+    const csv = lines.join('\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `${(camp.name || 'campaign').replace(/\s+/g, '_')}_log.csv`;
+    link.click();
+  }
+
+  function openLogEntryDetailModal(entry, targetLabel = '') {
+    if (!entry) return;
+    const overlay = document.getElementById('modal-overlay');
+    const modal = document.getElementById('modal');
+    const content = document.getElementById('modal-content');
+    const titleEl = document.getElementById('modal-title');
+    if (titleEl) titleEl.textContent = 'Log Entry';
+    content.innerHTML = '';
+
+    const fields = [
+      ['Time', new Date(entry.time).toLocaleString()],
+      ['Session', entry.session || ''],
+      ['Type', entry.type || 'action'],
+      ['Actor', entry.actor || 'Unknown'],
+      ['Actor Role', entry.actorRole || ''],
+      ['Action', entry.action || ''],
+      ['Target', targetLabel || entry.targetLabel || '']
+    ];
+    fields.forEach(([k, v]) => {
+      const row = document.createElement('div');
+      row.className = 'modal-field modal-field-inline';
+      const key = document.createElement('strong');
+      key.textContent = `${k}:`;
+      key.style.minWidth = '110px';
+      const val = document.createElement('span');
+      val.textContent = String(v || '');
+      row.appendChild(key);
+      row.appendChild(val);
+      content.appendChild(row);
+    });
+
+    const btnRow = document.createElement('div');
+    btnRow.style.display = 'flex';
+    btnRow.style.gap = '8px';
+    btnRow.style.marginTop = '10px';
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'modal-submit';
+    closeBtn.textContent = 'Close';
+    closeBtn.addEventListener('click', () => closeModal());
+    btnRow.appendChild(closeBtn);
+    content.appendChild(btnRow);
+    overlay.classList.remove('hidden');
+    modal.classList.remove('hidden');
+  }
+
+  function renderLogPagination(totalEntries, totalPages) {
+    const pager = document.getElementById('log-pagination');
+    if (!pager) return;
+    pager.innerHTML = '';
+    if (totalEntries <= 0) {
+      pager.classList.add('hidden');
+      return;
+    }
+    pager.classList.remove('hidden');
+    const page = Math.min(totalPages, Math.max(1, parseInt(logFilterState.page, 10) || 1));
+    const pageSize = Math.max(10, parseInt(logFilterState.pageSize, 10) || 50);
+    const start = (page - 1) * pageSize + 1;
+    const end = Math.min(totalEntries, start + pageSize - 1);
+
+    const summary = document.createElement('span');
+    summary.className = 'log-page-summary';
+    summary.textContent = `Showing ${start}-${end} of ${totalEntries}`;
+    pager.appendChild(summary);
+
+    const pageSizeSel = document.createElement('select');
+    [25, 50, 100].forEach((size) => {
+      const opt = document.createElement('option');
+      opt.value = String(size);
+      opt.textContent = `${size}/page`;
+      if (pageSize === size) opt.selected = true;
+      pageSizeSel.appendChild(opt);
+    });
+    pageSizeSel.title = 'Log page size';
+    pageSizeSel.addEventListener('change', (e) => {
+      logFilterState.pageSize = parseInt(e.target.value, 10) || 50;
+      logFilterState.page = 1;
+      renderLog();
+    });
+    pager.appendChild(pageSizeSel);
+
+    const prevBtn = document.createElement('button');
+    prevBtn.className = 'toolbar-btn';
+    prevBtn.textContent = 'Prev';
+    prevBtn.disabled = page <= 1;
+    prevBtn.addEventListener('click', () => {
+      logFilterState.page = Math.max(1, page - 1);
+      renderLog();
+    });
+    pager.appendChild(prevBtn);
+
+    const pageInfo = document.createElement('span');
+    pageInfo.className = 'log-page-summary';
+    pageInfo.textContent = `Page ${page}/${totalPages}`;
+    pager.appendChild(pageInfo);
+
+    const nextBtn = document.createElement('button');
+    nextBtn.className = 'toolbar-btn';
+    nextBtn.textContent = 'Next';
+    nextBtn.disabled = page >= totalPages;
+    nextBtn.addEventListener('click', () => {
+      logFilterState.page = Math.min(totalPages, page + 1);
+      renderLog();
+    });
+    pager.appendChild(nextBtn);
   }
 
   function generateSessionRecapText() {
@@ -6417,7 +8285,8 @@
       .slice(-12)
       .map((e) => {
         const label = resolveLogTargetLabel(camp, e);
-        return `- ${e.action}${label ? ` (${label})` : ''}`;
+        const actor = e.actor ? ` by ${e.actor}` : '';
+        return `- ${e.action}${label ? ` (${label})` : ''}${actor}`;
       });
 
     const pcs = Object.values(camp.entities || {}).filter(e => e.type === 'pc');
@@ -6516,6 +8385,9 @@
     const shortcuts = [
       ['/', 'Focus entity search'],
       ['Ctrl/Cmd + S', 'Save campaign'],
+      ['Ctrl/Cmd + Z', 'Undo destructive action'],
+      ['Ctrl/Cmd + Y', 'Redo undone action'],
+      ['Ctrl/Cmd + Shift + Z', 'Redo undone action'],
       ['↑ / ↓', 'Select previous/next visible entity'],
       ['← / →', 'Switch between top tabs'],
       ['Shift + T', 'Add a task to selected PC'],
@@ -6552,6 +8424,31 @@
     if (target === 'gm') return 'GM';
     if (typeof target === 'string' && target.startsWith('user:')) return target.slice(5);
     return 'Party';
+  }
+
+  function deriveGmWhisperTargets(camp = currentCampaign(), users = state.users, currentUser = state.currentUser) {
+    const out = [];
+    const seen = new Set();
+    const gmUsers = new Set(Array.isArray(camp && camp.gmUsers) ? camp.gmUsers : []);
+    const memberUsers = Array.isArray(camp && camp.memberUsers) ? camp.memberUsers : [];
+    memberUsers.forEach((name) => {
+      if (!name || name === currentUser) return;
+      if (gmUsers.has(name)) return;
+      if (seen.has(name)) return;
+      seen.add(name);
+      out.push(name);
+    });
+    if (!out.length) {
+      Object.keys(users || {})
+        .filter((name) => name && name !== currentUser)
+        .sort((a, b) => a.localeCompare(b))
+        .forEach((name) => {
+          if (seen.has(name)) return;
+          seen.add(name);
+          out.push(name);
+        });
+    }
+    return out.sort((a, b) => a.localeCompare(b));
   }
 
   function canViewMessage(msg) {
@@ -6607,13 +8504,7 @@
     if (!state.gmMode) {
       addOpt('gm', 'Whisper to GM');
     } else {
-      const players = Object.entries(state.users || {})
-        .filter(([name, user]) => {
-          if (!name || name === state.currentUser) return false;
-          return user && user.account_type === 'player';
-        })
-        .map(([name]) => name)
-        .sort((a, b) => a.localeCompare(b));
+      const players = deriveGmWhisperTargets(currentCampaign(), state.users, state.currentUser);
       players.forEach((name) => addOpt('user:' + name, 'Whisper to ' + name));
     }
     sel.value = Array.from(sel.options).some(o => o.value === prior) ? prior : 'party';
@@ -6705,13 +8596,29 @@
       const empty = document.createElement('div');
       empty.className = 'messages-empty';
       const mode = messageFilterState.mode || 'all';
-      empty.textContent = mode === 'unread'
+      const message = mode === 'unread'
         ? 'No unread messages in this view.'
         : mode === 'whispers'
           ? 'No whispers yet. Use target select to whisper.'
           : mode === 'party'
             ? 'No party messages yet.'
             : 'No messages yet. Start with a party message or whisper.';
+      const text = document.createElement('div');
+      text.textContent = message;
+      empty.appendChild(text);
+      if (mode !== 'unread') {
+        const quickBtn = document.createElement('button');
+        quickBtn.className = 'toolbar-btn';
+        quickBtn.textContent = mode === 'whispers' ? 'Start Whisper' : 'Start Party Message';
+        quickBtn.style.marginTop = '8px';
+        quickBtn.addEventListener('click', () => {
+          const target = document.getElementById('message-target-select');
+          const input = document.getElementById('message-input');
+          if (target) target.value = mode === 'whispers' ? 'gm' : 'party';
+          if (input) input.focus();
+        });
+        empty.appendChild(quickBtn);
+      }
       list.appendChild(empty);
     }
     if (readChanged) saveCampaigns();
@@ -6726,26 +8633,39 @@
   function exportCampaign(gmExport = false) {
     const camp = JSON.parse(JSON.stringify(currentCampaign()));
     if (!gmExport) {
+      const removedEntities = new Set();
       // Remove gmOnly entities
       Object.keys(camp.entities).forEach(id => {
         if (camp.entities[id].gmOnly) {
+          removedEntities.add(id);
           delete camp.entities[id];
         } else {
           // Remove gmNotes
           delete camp.entities[id].gmNotes;
         }
       });
+      const removedRelationships = new Set();
       // Remove secret relationships and any pointing to removed entities
       Object.keys(camp.relationships).forEach(rid => {
         const rel = camp.relationships[rid];
         if (rel.secret) {
+          removedRelationships.add(rid);
           delete camp.relationships[rid];
         } else if (!camp.entities[rel.source] || !camp.entities[rel.target]) {
+          removedRelationships.add(rid);
           delete camp.relationships[rid];
         }
       });
       if (Array.isArray(camp.messages)) {
         camp.messages = camp.messages.filter(m => (m.target || 'party') === 'party');
+      }
+      if (Array.isArray(camp.logs)) {
+        camp.logs = camp.logs.filter((entry) => {
+          if (!entry || !entry.target) return true;
+          if (removedEntities.has(entry.target) || removedRelationships.has(entry.target)) return false;
+          if (!camp.entities[entry.target] && !camp.relationships[entry.target]) return false;
+          return true;
+        });
       }
     }
     // Clean positions for removed nodes
@@ -6860,6 +8780,7 @@
       if (!Array.isArray(data.messages)) data.messages = [];
       if (!Array.isArray(data.clocks)) data.clocks = [];
       if (!Array.isArray(data.undoStack)) data.undoStack = [];
+      if (!Array.isArray(data.redoStack)) data.redoStack = [];
       state.campaigns[newId] = data;
       state.currentCampaignId = newId;
       saveCampaigns();
@@ -6999,6 +8920,39 @@
    * window and triggers print. Uses the same HTML structure but only
    * includes the selected entity.
    */
+  function exportPCIdentityCard(entityId) {
+    const camp = currentCampaign();
+    const ent = camp && camp.entities ? camp.entities[entityId] : null;
+    if (!ent || ent.type !== 'pc') return;
+    const name = escapeHtml(entityLabel(ent));
+    const cls = escapeHtml(ent.class || 'Unclassed');
+    const pronouns = escapeHtml(ent.pronouns || '');
+    const portrait = ent.image
+      ? `<img src="${ent.image}" alt="Portrait" style="width:100%;height:220px;object-fit:cover;border-radius:8px;border:1px solid #665a49;">`
+      : '<div style="width:100%;height:220px;border:1px dashed #665a49;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#8d7f6c;">No portrait</div>';
+    const domains = (ent.domains || []).map(d => d.name).filter(Boolean).slice(0, 4).join(', ');
+    const skills = (ent.skills || []).map(s => s.name).filter(Boolean).slice(0, 6).join(', ');
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>${name} ID Card</title></head>
+      <body style="margin:0;padding:16px;font-family:Georgia,serif;background:#f4efe7;color:#231d18;">
+        <div style="max-width:380px;border:2px solid #5f4f3f;border-radius:10px;padding:12px;background:#fffaf1;">
+          <h1 style="margin:0 0 4px;font-size:1.35rem;">${name}</h1>
+          <div style="margin:0 0 10px;color:#6a5847;font-size:0.95rem;">${cls}${pronouns ? ' • ' + pronouns : ''}</div>
+          ${portrait}
+          <div style="margin-top:10px;font-size:0.86rem;"><strong>Skills:</strong> ${escapeHtml(skills || '—')}</div>
+          <div style="margin-top:6px;font-size:0.86rem;"><strong>Domains:</strong> ${escapeHtml(domains || '—')}</div>
+        </div>
+        <script>window.print();</script>
+      </body></html>`;
+    const w = window.open('', '_blank');
+    if (!w) {
+      showToast('Popup blocked. Allow popups to export card.', 'warn');
+      return;
+    }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
+  }
+
   async function printEntitySheet(entityId, options = {}) {
     const ent = currentCampaign().entities[entityId];
     if (!ent) return;
@@ -7638,6 +9592,323 @@
     collabField.appendChild(membersWrap);
     content.appendChild(collabField);
 
+    // Sync transport (local channel vs Supabase realtime)
+    const syncCfg = state.syncConfig || loadSyncConfig();
+    const syncField = document.createElement('div');
+    syncField.className = 'modal-field';
+    syncField.style.border = '1px solid var(--spire-border)';
+    syncField.style.borderRadius = 'var(--radius)';
+    syncField.style.padding = '8px';
+    syncField.style.background = 'var(--spire-mid)';
+    const syncLabel = document.createElement('label');
+    syncLabel.textContent = 'Realtime Transport';
+    syncField.appendChild(syncLabel);
+
+    const transportSel = document.createElement('select');
+    [
+      { value: 'local', label: 'Local (multi-tab on same browser)' },
+      { value: 'supabase', label: 'Supabase Realtime (cross-device)' }
+    ].forEach((optData) => {
+      const opt = document.createElement('option');
+      opt.value = optData.value;
+      opt.textContent = optData.label;
+      if ((syncCfg.transport || 'local') === optData.value) opt.selected = true;
+      transportSel.appendChild(opt);
+    });
+    transportSel.style.marginTop = '6px';
+    syncField.appendChild(transportSel);
+
+    const syncMeta = document.createElement('div');
+    syncMeta.className = 'text-muted';
+    syncMeta.style.fontSize = '0.78rem';
+    syncMeta.style.marginTop = '4px';
+    syncField.appendChild(syncMeta);
+
+    const supaWrap = document.createElement('div');
+    supaWrap.style.display = 'grid';
+    supaWrap.style.gridTemplateColumns = '1fr';
+    supaWrap.style.gap = '6px';
+    supaWrap.style.marginTop = '8px';
+    const supaUrl = document.createElement('input');
+    supaUrl.type = 'text';
+    supaUrl.placeholder = 'Supabase URL';
+    supaUrl.value = syncCfg.supabaseUrl || '';
+    const supaKey = document.createElement('input');
+    supaKey.type = 'password';
+    supaKey.placeholder = 'Supabase anon key';
+    supaKey.value = syncCfg.supabaseAnonKey || '';
+    supaWrap.appendChild(supaUrl);
+    supaWrap.appendChild(supaKey);
+    syncField.appendChild(supaWrap);
+
+    const reconnectBtn = document.createElement('button');
+    reconnectBtn.textContent = 'Reconnect Realtime';
+    reconnectBtn.style.marginTop = '8px';
+    reconnectBtn.addEventListener('click', () => {
+      const nextCfg = saveSyncConfig({
+        transport: transportSel.value,
+        supabaseUrl: supaUrl.value,
+        supabaseAnonKey: supaKey.value
+      });
+      initRealtimeChannel();
+      const active = state.realtimeTransport === 'supabase' && nextCfg.transport === 'supabase'
+        ? 'Supabase realtime connected.'
+        : `Realtime transport: ${state.realtimeTransport}.`;
+      showToast(active, 'info');
+      openSettingsModal();
+    });
+    syncField.appendChild(reconnectBtn);
+
+    function syncTransportVisibility() {
+      const wantsSupa = transportSel.value === 'supabase';
+      supaWrap.style.display = wantsSupa ? 'grid' : 'none';
+      syncMeta.textContent = wantsSupa
+        ? 'Requires Supabase URL + anon key and online-client setup.'
+        : 'Uses BroadcastChannel for same-browser tab sync.';
+    }
+    syncTransportVisibility();
+    transportSel.addEventListener('change', () => {
+      syncTransportVisibility();
+      saveSyncConfig({
+        transport: transportSel.value,
+        supabaseUrl: supaUrl.value,
+        supabaseAnonKey: supaKey.value
+      });
+      initRealtimeChannel();
+      updateSyncQueueButton();
+    });
+    supaUrl.addEventListener('change', () => {
+      saveSyncConfig({ transport: transportSel.value, supabaseUrl: supaUrl.value, supabaseAnonKey: supaKey.value });
+      initRealtimeChannel();
+    });
+    supaKey.addEventListener('change', () => {
+      saveSyncConfig({ transport: transportSel.value, supabaseUrl: supaUrl.value, supabaseAnonKey: supaKey.value });
+      initRealtimeChannel();
+    });
+    content.appendChild(syncField);
+
+    // Scenario packs / plugin scaffold
+    if (!Array.isArray(camp.scenarioPacks)) camp.scenarioPacks = [];
+    const packField = document.createElement('div');
+    packField.className = 'modal-field';
+    packField.style.border = '1px solid var(--spire-border)';
+    packField.style.borderRadius = 'var(--radius)';
+    packField.style.padding = '8px';
+    packField.style.background = 'var(--spire-mid)';
+    const packLabel = document.createElement('label');
+    packLabel.textContent = 'Scenario Packs (Plugin Scaffold)';
+    packField.appendChild(packLabel);
+    const packMeta = document.createElement('div');
+    packMeta.className = 'text-muted';
+    packMeta.style.fontSize = '0.78rem';
+    packMeta.style.marginBottom = '6px';
+    packMeta.textContent = 'Import JSON packs to extend NPC templates and scene prompt tables without editing core code.';
+    packField.appendChild(packMeta);
+    const packList = document.createElement('div');
+    packList.className = 'sync-queue-list';
+    packField.appendChild(packList);
+    const packInput = document.createElement('input');
+    packInput.type = 'file';
+    packInput.accept = 'application/json';
+    packInput.style.display = 'none';
+    packInput.addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const parsed = JSON.parse(String(reader.result || '{}'));
+          const normalized = normalizeScenarioPack(parsed);
+          if (!normalized) {
+            showToast('Invalid pack format.', 'warn');
+            return;
+          }
+          const existing = (camp.scenarioPacks || []).find((p) => p.id === normalized.id || p.name.toLowerCase() === normalized.name.toLowerCase());
+          if (existing) {
+            Object.assign(existing, normalized);
+          } else {
+            camp.scenarioPacks.push(normalized);
+          }
+          appendLog('Imported scenario pack', '');
+          saveCampaigns();
+          openSettingsModal();
+          showToast(`Pack "${normalized.name}" loaded.`, 'info');
+        } catch (_) {
+          showToast('Pack import failed.', 'warn');
+        } finally {
+          e.target.value = '';
+        }
+      };
+      reader.readAsText(file);
+    });
+    packField.appendChild(packInput);
+    const packActions = document.createElement('div');
+    packActions.style.display = 'flex';
+    packActions.style.gap = '6px';
+    packActions.style.marginTop = '6px';
+    const importPackBtn = document.createElement('button');
+    importPackBtn.textContent = 'Import Pack';
+    importPackBtn.addEventListener('click', () => packInput.click());
+    packActions.appendChild(importPackBtn);
+    const templateBtn = document.createElement('button');
+    templateBtn.textContent = 'Download Template';
+    templateBtn.addEventListener('click', () => {
+      const sample = {
+        id: 'pack-sample',
+        name: 'Sample Pack',
+        source: 'local',
+        enabled: true,
+        scenePrompts: {
+          complications: ['A shrine has been sealed by unknown agents.'],
+          factionReactions: ['A hidden ministry proxy starts asking questions.'],
+          twists: ['A trusted intermediary is an impostor.']
+        },
+        npcTemplates: {
+          ministry_agent: {
+            label: 'Ministry Agent',
+            role: 'Ministry Agent',
+            threatLevel: 'Significant',
+            disposition: 'Wary',
+            wants: 'Contain dissent quickly',
+            fears: 'Political embarrassment',
+            leverage: 'Official authority and informant network',
+            inventory: [
+              { item: 'Service blade', quantity: 1, type: 'weapon', stress: 'D6 stress', tags: ['Parrying'] }
+            ]
+          }
+        }
+      };
+      const blob = new Blob([JSON.stringify(sample, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'scenario-pack-template.json';
+      link.click();
+      URL.revokeObjectURL(url);
+    });
+    packActions.appendChild(templateBtn);
+    packField.appendChild(packActions);
+    if (!camp.scenarioPacks.length) {
+      const empty = document.createElement('div');
+      empty.className = 'text-muted';
+      empty.style.fontSize = '0.8rem';
+      empty.style.padding = '6px';
+      empty.textContent = 'No packs installed.';
+      packList.appendChild(empty);
+    } else {
+      camp.scenarioPacks.forEach((pack) => {
+        const row = document.createElement('div');
+        row.className = 'sync-queue-row';
+        const chk = document.createElement('input');
+        chk.type = 'checkbox';
+        chk.checked = pack.enabled !== false;
+        chk.addEventListener('change', () => {
+          pack.enabled = !!chk.checked;
+          saveCampaigns();
+        });
+        const body = document.createElement('div');
+        body.className = 'sync-queue-row-body';
+        const nameEl = document.createElement('div');
+        nameEl.className = 'sync-queue-when';
+        nameEl.textContent = pack.name || 'Scenario Pack';
+        const metaEl = document.createElement('div');
+        metaEl.className = 'sync-queue-meta';
+        const promptCount = ((pack.scenePrompts?.complications || []).length + (pack.scenePrompts?.factionReactions || []).length + (pack.scenePrompts?.twists || []).length);
+        const templateCount = Object.keys(pack.npcTemplates || {}).length;
+        metaEl.textContent = `${templateCount} template(s), ${promptCount} prompts`;
+        body.appendChild(nameEl);
+        body.appendChild(metaEl);
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'row-remove-btn';
+        removeBtn.textContent = '×';
+        removeBtn.title = 'Remove pack';
+        removeBtn.addEventListener('click', () => {
+          camp.scenarioPacks = camp.scenarioPacks.filter((p) => p.id !== pack.id);
+          appendLog('Removed scenario pack', '');
+          saveCampaigns();
+          openSettingsModal();
+        });
+        row.appendChild(chk);
+        row.appendChild(body);
+        row.appendChild(removeBtn);
+        packList.appendChild(row);
+      });
+    }
+    content.appendChild(packField);
+
+    // Crash reporting / telemetry
+    const teleCfg = state.telemetryConfig || loadTelemetryConfig();
+    const teleField = document.createElement('div');
+    teleField.className = 'modal-field';
+    teleField.style.border = '1px solid var(--spire-border)';
+    teleField.style.borderRadius = 'var(--radius)';
+    teleField.style.padding = '8px';
+    teleField.style.background = 'var(--spire-mid)';
+    const teleLabel = document.createElement('label');
+    teleLabel.textContent = 'Crash Reporting';
+    teleField.appendChild(teleLabel);
+    const teleToggleRow = document.createElement('div');
+    teleToggleRow.className = 'modal-field modal-field-inline';
+    const teleToggle = document.createElement('input');
+    teleToggle.type = 'checkbox';
+    teleToggle.checked = !!teleCfg.enabled;
+    const teleToggleLabel = document.createElement('label');
+    teleToggleLabel.textContent = 'Enable crash reporting';
+    teleToggleRow.appendChild(teleToggle);
+    teleToggleRow.appendChild(teleToggleLabel);
+    teleField.appendChild(teleToggleRow);
+    const teleEndpoint = document.createElement('input');
+    teleEndpoint.type = 'text';
+    teleEndpoint.placeholder = 'Webhook endpoint (optional)';
+    teleEndpoint.value = teleCfg.endpoint || '';
+    teleField.appendChild(teleEndpoint);
+    const teleMeta = document.createElement('div');
+    teleMeta.className = 'text-muted';
+    teleMeta.style.fontSize = '0.78rem';
+    const localCrashCount = loadCrashLog().length;
+    teleMeta.textContent = `Local crash log entries: ${localCrashCount}`;
+    teleField.appendChild(teleMeta);
+    const teleActions = document.createElement('div');
+    teleActions.style.display = 'flex';
+    teleActions.style.gap = '6px';
+    const saveTeleBtn = document.createElement('button');
+    saveTeleBtn.textContent = 'Save Telemetry';
+    saveTeleBtn.addEventListener('click', () => {
+      saveTelemetryConfig({
+        enabled: teleToggle.checked,
+        endpoint: teleEndpoint.value,
+        maxLocal: teleCfg.maxLocal || 50
+      });
+      showToast('Crash reporting settings saved.', 'info');
+      openSettingsModal();
+    });
+    teleActions.appendChild(saveTeleBtn);
+    const exportTeleBtn = document.createElement('button');
+    exportTeleBtn.textContent = 'Export Crash Log';
+    exportTeleBtn.addEventListener('click', () => {
+      const data = loadCrashLog();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `spire-crash-log-${Date.now()}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+    });
+    teleActions.appendChild(exportTeleBtn);
+    const clearTeleBtn = document.createElement('button');
+    clearTeleBtn.textContent = 'Clear Crash Log';
+    clearTeleBtn.addEventListener('click', async () => {
+      const ok = await askConfirm('Clear local crash log entries?', 'Clear Crash Log');
+      if (!ok) return;
+      saveCrashLog([]);
+      showToast('Crash log cleared.', 'info');
+      openSettingsModal();
+    });
+    teleActions.appendChild(clearTeleBtn);
+    teleField.appendChild(teleActions);
+    content.appendChild(teleField);
+
     // Rules profile
     const rulesField = document.createElement('div');
     rulesField.className = 'modal-field';
@@ -7658,6 +9929,24 @@
     rulesField.appendChild(rulesLabel);
     rulesField.appendChild(rulesSel);
     content.appendChild(rulesField);
+
+    // Rules preset diff panel: explicit view of what each profile changes.
+    const rulesDiffField = document.createElement('div');
+    rulesDiffField.className = 'modal-field';
+    rulesDiffField.style.border = '1px solid var(--spire-border)';
+    rulesDiffField.style.borderRadius = 'var(--radius)';
+    rulesDiffField.style.padding = '8px';
+    rulesDiffField.style.background = 'var(--spire-mid)';
+    const diffTitle = document.createElement('label');
+    diffTitle.textContent = 'Preset Differences';
+    rulesDiffField.appendChild(diffTitle);
+    const diffGrid = document.createElement('div');
+    diffGrid.style.display = 'grid';
+    diffGrid.style.gridTemplateColumns = '1.4fr 1fr 1fr 1fr';
+    diffGrid.style.gap = '6px';
+    diffGrid.style.fontSize = '0.78rem';
+    rulesDiffField.appendChild(diffGrid);
+    content.appendChild(rulesDiffField);
 
     // Custom rules toggles (visible only when profile = Custom)
     if (!camp.customRules) {
@@ -7684,6 +9973,7 @@
       chk.addEventListener('change', e => {
         camp.customRules[key] = e.target.checked;
         saveCampaigns();
+        renderRulesDiff();
       });
       const lbl = document.createElement('label');
       lbl.textContent = labelText;
@@ -7697,8 +9987,55 @@
     customRulesField.appendChild(makeRuleToggle('Clear stress automatically when Fallout triggers', 'clearStressOnFallout'));
     content.appendChild(customRulesField);
 
+    function renderRulesDiff() {
+      diffGrid.innerHTML = '';
+      const headers = ['Rule', 'Core', 'Quickstart', 'Custom'];
+      headers.forEach((h, i) => {
+        const cell = document.createElement('div');
+        cell.textContent = h;
+        cell.style.fontWeight = '700';
+        cell.style.color = 'var(--accent-hi)';
+        if (i > 0 && rulesSel.value.toLowerCase() === h.toLowerCase()) {
+          cell.style.textDecoration = 'underline';
+        }
+        diffGrid.appendChild(cell);
+      });
+      const rows = [
+        {
+          label: 'Difficulty downgrades',
+          core: true,
+          quick: true,
+          custom: camp.customRules.difficultyDowngrades !== false
+        },
+        {
+          label: 'Fallout check on stress',
+          core: true,
+          quick: false,
+          custom: camp.customRules.falloutCheckOnStress !== false
+        },
+        {
+          label: 'Auto-clear stress on fallout',
+          core: true,
+          quick: false,
+          custom: camp.customRules.clearStressOnFallout !== false
+        }
+      ];
+      rows.forEach((row) => {
+        const labelCell = document.createElement('div');
+        labelCell.textContent = row.label;
+        diffGrid.appendChild(labelCell);
+        [row.core, row.quick, row.custom].forEach((v) => {
+          const valCell = document.createElement('div');
+          valCell.textContent = v ? 'Enabled' : 'Disabled';
+          valCell.style.color = v ? 'var(--ok)' : 'var(--spire-dim)';
+          diffGrid.appendChild(valCell);
+        });
+      });
+    }
+
     function syncRulesVisibility() {
       customRulesField.style.display = (rulesSel.value === 'Custom') ? 'block' : 'none';
+      renderRulesDiff();
     }
     syncRulesVisibility();
     rulesSel.addEventListener('change', e => {
@@ -8036,7 +10373,7 @@
       const newlyConflicted = !state.syncConflictActive;
       state.lastSeenRevision = e.newValue;
       setSyncConflictWarning(true, conflictWarningText());
-      setSaveState('error', 'Sync conflict');
+      setSaveState('error', conflictWarningText());
       if (newlyConflicted && (state.localEditsSinceConflict || 0) === 0) {
         setTimeout(async () => {
           if (!state.syncConflictActive || (state.localEditsSinceConflict || 0) > 0) return;
@@ -8047,6 +10384,10 @@
           if (ok) reloadCampaignFromStorage();
         }, 60);
       }
+    });
+    window.addEventListener('online', () => {
+      const flushed = flushPendingSaveOps();
+      if (flushed) showToast('Back online. Queued changes synced.', 'info');
     });
     // Search box
     document.getElementById('search-input').addEventListener('input', () => {
@@ -8073,6 +10414,28 @@
       intro.style.color = 'var(--spire-muted)';
       intro.textContent = type === 'org' ? 'Choose a name for the new organisation:' : 'Choose a name style:';
       content.appendChild(intro);
+      let npcTemplateKey = 'none';
+      if (type === 'npc') {
+        const tplField = document.createElement('div');
+        tplField.className = 'modal-field';
+        const tplLabel = document.createElement('label');
+        tplLabel.textContent = 'Quick Template';
+        const tplSelect = document.createElement('select');
+        const templates = getEffectiveNpcTemplates(currentCampaign());
+        Object.entries(templates).forEach(([key, tpl]) => {
+          const opt = document.createElement('option');
+          opt.value = key;
+          opt.textContent = tpl.label;
+          tplSelect.appendChild(opt);
+        });
+        tplSelect.value = 'none';
+        tplSelect.addEventListener('change', (e) => {
+          npcTemplateKey = e.target.value || 'none';
+        });
+        tplField.appendChild(tplLabel);
+        tplField.appendChild(tplSelect);
+        content.appendChild(tplField);
+      }
 
       const btnWrap = document.createElement('div');
       btnWrap.style.display = 'flex';
@@ -8096,6 +10459,7 @@
           const ent = newEntity(camp, 'npc');
           ent.name = name;
           ent.role = 'NPC';
+          applyNpcTemplate(ent, npcTemplateKey);
           appendLog('Created NPC', ent.id);
           saveAndRefresh();
           selectEntity(ent.id);
@@ -8244,6 +10608,7 @@
     if (logSearchInput) {
       logSearchInput.addEventListener('input', (e) => {
         logFilterState.query = e.target.value || '';
+        logFilterState.page = 1;
         renderLog();
       });
     }
@@ -8251,6 +10616,23 @@
     if (logSessionFilter) {
       logSessionFilter.addEventListener('change', (e) => {
         logFilterState.session = e.target.value || 'all';
+        logFilterState.page = 1;
+        renderLog();
+      });
+    }
+    const logActorFilter = document.getElementById('log-actor-filter');
+    if (logActorFilter) {
+      logActorFilter.addEventListener('change', (e) => {
+        logFilterState.actor = e.target.value || 'all';
+        logFilterState.page = 1;
+        renderLog();
+      });
+    }
+    const logTypeFilter = document.getElementById('log-type-filter');
+    if (logTypeFilter) {
+      logTypeFilter.addEventListener('change', (e) => {
+        logFilterState.actionType = e.target.value || 'all';
+        logFilterState.page = 1;
         renderLog();
       });
     }
@@ -8277,10 +10659,27 @@
     document.getElementById('save-btn').addEventListener('click', () => {
       void attemptManualSave();
     });
+    const saveRetryBtn = document.getElementById('save-retry-btn');
+    if (saveRetryBtn) {
+      saveRetryBtn.addEventListener('click', () => {
+        void attemptManualSave();
+      });
+    }
     const syncReloadBtn = document.getElementById('sync-reload-btn');
     if (syncReloadBtn) {
       syncReloadBtn.addEventListener('click', () => {
         reloadCampaignFromStorage();
+      });
+    }
+    const syncForceBtn = document.getElementById('sync-force-btn');
+    if (syncForceBtn) {
+      syncForceBtn.addEventListener('click', async () => {
+        const ok = await askConfirm(
+          'Force overwrite using data from this tab?',
+          'Force Overwrite'
+        );
+        if (!ok) return;
+        forceOverwriteSave();
       });
     }
     const syncIndicator = document.getElementById('sync-conflict-indicator');
@@ -8289,10 +10688,22 @@
         openSyncConflictModal();
       });
     }
+    const syncQueueBtn = document.getElementById('sync-queue-btn');
+    if (syncQueueBtn) {
+      syncQueueBtn.addEventListener('click', () => {
+        openSyncQueueModal();
+      });
+    }
     const undoBtn = document.getElementById('undo-btn');
     if (undoBtn) {
       undoBtn.addEventListener('click', () => {
         undoLastDestructiveAction();
+      });
+    }
+    const redoBtn = document.getElementById('redo-btn');
+    if (redoBtn) {
+      redoBtn.addEventListener('click', () => {
+        redoLastDestructiveAction();
       });
     }
     const shortcutsBtn = document.getElementById('shortcuts-btn');
@@ -8410,6 +10821,12 @@
         openSessionRecapModal();
       });
     }
+    const exportLogCsvBtn = document.getElementById('export-log-csv-btn');
+    if (exportLogCsvBtn) {
+      exportLogCsvBtn.addEventListener('click', () => {
+        exportFilteredLogCsv();
+      });
+    }
     const sendMessageBtn = document.getElementById('send-message-btn');
     const messageInput = document.getElementById('message-input');
     const targetSelect = document.getElementById('message-target-select');
@@ -8507,9 +10924,18 @@
       } else if (e.key === 'Escape') {
         // Close inspector or modals
         document.getElementById('inspector').classList.add('hidden');
+      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'z' && !e.target.matches('input, textarea, select')) {
+        e.preventDefault();
+        undoLastDestructiveAction();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
         void attemptManualSave();
+      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key.toLowerCase() === 'y' && !e.target.matches('input, textarea, select')) {
+        e.preventDefault();
+        redoLastDestructiveAction();
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 'z' && !e.target.matches('input, textarea, select')) {
+        e.preventDefault();
+        redoLastDestructiveAction();
       }
     });
     // Tab switching
@@ -8524,6 +10950,7 @@
         // When switching to graph view, resize the custom canvas and redraw
         if (target === 'web-view') {
           setTimeout(() => { resizeGraphCanvas(); }, 50);
+          updateGraph();
           // Auto-dismiss relationship inspector when leaving web
         }
         if (target === 'log-view') {
@@ -8536,6 +10963,7 @@
         if (target !== 'web-view') {
           document.getElementById('inspector').classList.add('hidden');
         }
+        ensureAccessibilitySemantics();
       });
     });
   }
@@ -8552,6 +10980,15 @@
    */
   function initAfterLoad() {
     const camp = currentCampaign();
+    state.syncConfig = loadSyncConfig();
+    state.telemetryConfig = loadTelemetryConfig();
+    if (!state.currentUser) {
+      closeRealtimeChannel();
+    } else {
+      initRealtimeChannel();
+    }
+    if (logFilterState.actor === undefined) logFilterState.actor = 'all';
+    if (logFilterState.actionType === undefined) logFilterState.actionType = 'all';
     setSyncConflictWarning(false);
     if (!Array.isArray(camp.clocks)) camp.clocks = [];
     if (camp.owner === undefined || camp.owner === null) camp.owner = state.currentUser || null;
@@ -8617,12 +11054,20 @@
     if (!['manual', 'name', 'pinned'].includes(camp.entitySort)) camp.entitySort = 'manual';
     if (camp.entityPinnedOnly === undefined) camp.entityPinnedOnly = false;
     if (!Array.isArray(camp.messages)) camp.messages = [];
+    if (camp.lastScenePrompt === undefined) camp.lastScenePrompt = null;
+    if (!Array.isArray(camp.scenarioPacks)) camp.scenarioPacks = [];
+    if (!camp.uiTipsDismissed || typeof camp.uiTipsDismissed !== 'object') camp.uiTipsDismissed = {};
     if (!camp.relationshipUndo || typeof camp.relationshipUndo !== 'object') camp.relationshipUndo = {};
+    if (!camp.relationshipRedo || typeof camp.relationshipRedo !== 'object') camp.relationshipRedo = {};
     if (!Array.isArray(camp.undoStack)) camp.undoStack = [];
+    if (!Array.isArray(camp.redoStack)) camp.redoStack = [];
     updateMessagesUnreadBadge();
     updateUndoButtonState();
     ensureAutoGrowTextareas(document);
     ensureAccessibilityLabels(document);
+    ensureAccessibilitySemantics();
+    updateSyncQueueButton();
+    if (navigator.onLine) flushPendingSaveOps();
   }
 
   /**
@@ -8647,13 +11092,9 @@
     document.documentElement.style.setProperty('--accent-glow',
       state.gmMode ? 'var(--gm-glow)' : 'var(--pl-glow)');
     const filterBar = document.getElementById('web-filter-bar');
-    // If player mode is active and web tab is selected, switch to sheets
+    // Keep GM-only filter controls hidden for players, but allow players
+    // to access the web tab itself (player-safe filtering already applies).
     if (!state.gmMode) {
-      const activeTab = document.querySelector('.tab-link.active');
-      if (activeTab && (activeTab.dataset.tab === 'log-view' || activeTab.dataset.tab === 'web-view')) {
-        document.querySelector('.tab-link[data-tab="sheets-view"]').click();
-      }
-      // Hide GM-only web filter bar for players
       if (filterBar) filterBar.style.display = 'none';
     } else {
       if (filterBar) filterBar.style.display = '';
@@ -8780,7 +11221,10 @@
 
   function logoutCurrentUser() {
     saveCampaigns();
+    closeRealtimeChannel();
     state.currentUser = null;
+    state.syncConfig = defaultSyncConfig();
+    state.telemetryConfig = defaultTelemetryConfig();
     state.campaigns = {};
     state.currentCampaignId = null;
     saveUsers();
@@ -8795,6 +11239,11 @@
   }
 
   function enterModeScreenForCurrentUser() {
+    if (state.currentUser) {
+      state.syncConfig = loadSyncConfig();
+      state.telemetryConfig = loadTelemetryConfig();
+      initRealtimeChannel();
+    }
     loadCampaigns();
     renderModeScreenCampaigns();
     updateModeUserRow();
@@ -8928,6 +11377,7 @@
     if (!data.memberUsers.includes(state.currentUser)) data.memberUsers.push(state.currentUser);
     if (!Array.isArray(data.gmUsers)) data.gmUsers = [];
     if (!Array.isArray(data.undoStack)) data.undoStack = [];
+    if (!Array.isArray(data.redoStack)) data.redoStack = [];
     state.campaigns[targetId] = data;
     state.currentCampaignId = targetId;
 
@@ -9028,6 +11478,7 @@
           data.inviteCode = '';
           data.sourceInviteCode = '';
           if (!Array.isArray(data.undoStack)) data.undoStack = [];
+          if (!Array.isArray(data.redoStack)) data.redoStack = [];
           state.campaigns[newId] = data;
           state.currentCampaignId = newId;
           saveCampaigns();
@@ -9043,6 +11494,7 @@
    * Entry point.
    */
   function init() {
+    bindGlobalErrorHandlers();
     loadUsers();
     setupAuthScreen();
     setupModeScreen();

@@ -221,3 +221,151 @@ test('maybeTriggerFallout does nothing when roll meets or exceeds total', () => 
   maybeTriggerFallout(pc, 'blood', 1, { rng: () => 0.9 });
   assert.equal(pc.fallout.length, 0);
 });
+
+test('getRecentEntityActions returns newest-first actions for one entity', () => {
+  const camp = {
+    logs: [
+      { action: 'Edited notes', target: 'pc-1', type: 'action', time: '2026-02-20T10:00:00.000Z' },
+      { action: 'Added task', target: 'pc-2', type: 'action', time: '2026-02-20T10:05:00.000Z' },
+      { action: 'Added fallout', target: 'pc-1', type: 'action', time: '2026-02-20T10:10:00.000Z' },
+      { action: 'Session 2 start', target: '', type: 'session', time: '2026-02-20T10:20:00.000Z' },
+      { action: 'Edited inventory', target: 'pc-1', type: 'action', time: '2026-02-20T10:30:00.000Z' }
+    ]
+  };
+  const { getRecentEntityActions } = loadFns(['getRecentEntityActions'], {
+    currentCampaign: () => camp
+  });
+
+  const actions = plain(getRecentEntityActions('pc-1', 2));
+  assert.equal(actions.length, 2);
+  assert.equal(actions[0].action, 'Edited inventory');
+  assert.equal(actions[1].action, 'Added fallout');
+});
+
+test('deriveAutomationSuggestions produces relationship and clock suggestions from session signals', () => {
+  const camp = {
+    currentSession: 3,
+    clocks: [],
+    logs: [
+      { session: 3, type: 'action', action: 'Added fallout' },
+      { session: 3, type: 'action', action: 'Fallout triggered (Moderate)' },
+      { session: 3, type: 'action', action: 'Edited relationship type' },
+      { session: 3, type: 'action', action: 'Edited relationship direction' },
+      { session: 3, type: 'action', action: 'Added relationship' },
+      { session: 3, type: 'action', action: 'Added member' },
+      { session: 3, type: 'action', action: 'Added task' },
+      { session: 3, type: 'action', action: 'Edited task' },
+      { session: 3, type: 'action', action: 'Added task' },
+      { session: 2, type: 'action', action: 'Edited relationship type' }
+    ]
+  };
+  const { deriveAutomationSuggestions } = loadFns(['deriveAutomationSuggestions']);
+  const out = plain(deriveAutomationSuggestions(camp, {
+    pendingFalloutCount: 4,
+    highStressPcCount: 2,
+    openTasksCount: 7
+  }));
+  const keys = out.map((s) => s.key);
+  assert.equal(keys.includes('clock-fallout-aftermath'), true);
+  assert.equal(keys.includes('clock-faction-backlash'), true);
+  assert.equal(keys.includes('review-web'), true);
+  assert.equal(keys.includes('clock-operation-pressure'), true);
+});
+
+test('normalizeScenarioPack keeps valid extensions and rejects empty packs', () => {
+  const { normalizeScenarioPack } = loadFns(['normalizeScenarioPack'], {
+    generateId: () => 'pack-generated'
+  });
+  const empty = normalizeScenarioPack({ id: 'x', name: 'Empty' });
+  assert.equal(empty, null);
+
+  const pack = plain(normalizeScenarioPack({
+    id: 'city-pack',
+    name: 'City Pack',
+    scenePrompts: { complications: ['A ward is sealed.'] },
+    npcTemplates: { fixer2: { label: 'Fixer 2', role: 'Fixer' } }
+  }));
+  assert.equal(pack.id, 'city-pack');
+  assert.equal(pack.scenePrompts.complications.length, 1);
+  assert.equal(Object.keys(pack.npcTemplates).includes('fixer2'), true);
+});
+
+test('getEffectiveScenePromptPools merges active pack prompts with defaults', () => {
+  const { getActiveScenarioPacks, getEffectiveScenePromptPools } = loadFns(
+    ['getActiveScenarioPacks', 'getEffectiveScenePromptPools'],
+    {
+      currentCampaign: () => ({
+        scenarioPacks: [
+          { enabled: true, scenePrompts: { complications: ['A ward is sealed.'], factionReactions: [], twists: [] } },
+          { enabled: false, scenePrompts: { complications: ['Disabled entry'], factionReactions: [], twists: [] } }
+        ]
+      }),
+      SCENE_COMPLICATIONS: ['Base complication'],
+      SCENE_FACTION_REACTIONS: ['Base reaction'],
+      SCENE_TWISTS: ['Base twist']
+    }
+  );
+  const pools = plain(getEffectiveScenePromptPools());
+  assert.equal(pools.complications.includes('Base complication'), true);
+  assert.equal(pools.complications.includes('A ward is sealed.'), true);
+  assert.equal(pools.complications.includes('Disabled entry'), false);
+  assert.equal(pools.factionReactions.includes('Base reaction'), true);
+  assert.equal(pools.twists.includes('Base twist'), true);
+  // Ensure dependency was loaded and callable
+  assert.equal(Array.isArray(getActiveScenarioPacks()), true);
+});
+
+test('exportCampaign strips gm-only entities, secrets, and non-party messages for player export', () => {
+  const camp = {
+    entities: {
+      a: { id: 'a', name: 'Alpha', gmOnly: false, gmNotes: 'secret' },
+      b: { id: 'b', name: 'Beta', gmOnly: true, gmNotes: 'hidden' }
+    },
+    relationships: {
+      r1: { id: 'r1', source: 'a', target: 'b', secret: false, type: 'Ally' },
+      r2: { id: 'r2', source: 'a', target: 'a', secret: true, type: 'Enemy' },
+      r3: { id: 'r3', source: 'a', target: 'a', secret: false, type: 'Ally' }
+    },
+    positions: { a: { x: 1, y: 2 }, b: { x: 2, y: 3 } },
+    messages: [
+      { id: 'm1', target: 'party', text: 'hello' },
+      { id: 'm2', target: 'gm', text: 'secret whisper' }
+    ],
+    logs: [
+      { action: 'Visible edit', target: 'a' },
+      { action: 'Hidden entity edit', target: 'b' },
+      { action: 'Secret relation edit', target: 'r2' }
+    ]
+  };
+  const { exportCampaign } = loadFns(['exportCampaign'], {
+    currentCampaign: () => camp
+  });
+  const playerSafe = JSON.parse(exportCampaign(false));
+  assert.equal(!!playerSafe.entities.a, true);
+  assert.equal(!!playerSafe.entities.b, false);
+  assert.equal(playerSafe.entities.a.gmNotes, undefined);
+  assert.equal(!!playerSafe.relationships.r1, false);
+  assert.equal(!!playerSafe.relationships.r2, false);
+  assert.equal(!!playerSafe.relationships.r3, true);
+  assert.equal(playerSafe.messages.length, 1);
+  assert.equal(playerSafe.messages[0].target, 'party');
+  assert.equal(playerSafe.logs.length, 1);
+  assert.equal(playerSafe.logs[0].target, 'a');
+});
+
+test('deriveGmWhisperTargets prioritizes non-GM campaign members', () => {
+  const { deriveGmWhisperTargets } = loadFns(['deriveGmWhisperTargets']);
+  const camp = {
+    gmUsers: ['alice', 'gm2'],
+    memberUsers: ['alice', 'gm2', 'bob', 'cara']
+  };
+  const users = {
+    alice: { createdAt: 'x' },
+    gm2: { createdAt: 'x' },
+    bob: { createdAt: 'x' },
+    cara: { createdAt: 'x' },
+    zed: { createdAt: 'x' }
+  };
+  const out = plain(deriveGmWhisperTargets(camp, users, 'alice'));
+  assert.deepEqual(out, ['bob', 'cara']);
+});
