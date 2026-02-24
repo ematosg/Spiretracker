@@ -62,6 +62,40 @@
     'Occult', 'Order', 'Religion', 'Technology'
   ];
 
+  // Lightweight in-app fallout guidance by resistance/severity so tables
+  // don't need to leave the app mid-session.
+  const FALLOUT_GUIDANCE = {
+    Blood: {
+      Minor: ['Bruised ribs', 'Cut hand', 'Winded and shaky'],
+      Moderate: ['Broken finger', 'Concussion symptoms', 'Deep bleeding wound'],
+      Severe: ['Crushed limb', 'Internal injuries', 'Near-fatal trauma']
+    },
+    Mind: {
+      Minor: ['Sleepless and rattled', 'Distracted by fear', 'Intrusive memory'],
+      Moderate: ['Panic response', 'Paranoia spike', 'Loss of composure'],
+      Severe: ['Psychic collapse', 'Dissociative break', 'Severe phobia trigger']
+    },
+    Silver: {
+      Minor: ['Damaged reputation', 'Unexpected expense', 'Social snub'],
+      Moderate: ['Debt pressure', 'Public scandal', 'Frozen assets'],
+      Severe: ['Financial ruin', 'Total disgrace in high society', 'Powerful creditor vendetta']
+    },
+    Shadow: {
+      Minor: ['Spotted by a watcher', 'Compromised route', 'Rumors of your movements'],
+      Moderate: ['Known to hostile faction', 'Safehouse burned', 'Hunted in district'],
+      Severe: ['Identity exposed', 'Persistent surveillance net', 'No safe ground left']
+    },
+    Reputation: {
+      Minor: ['Trusted contact offended', 'Street-level mistrust', 'Loss of face'],
+      Moderate: ['Faction setback', 'Broken alliance', 'Formal censure'],
+      Severe: ['Organization fracture', 'Declared enemy by faction', 'Open political collapse']
+    }
+  };
+
+  function defaultFalloutGuidance() {
+    return JSON.parse(JSON.stringify(FALLOUT_GUIDANCE));
+  }
+
   // Durance options for characters. Each option modifies the character
   // by granting skills, domains or resistance bonuses. The format is
   // { skills: [ ... ], domains: [ ... ], resistances: [ {name,value} ] }.
@@ -528,14 +562,23 @@
     darkMode: false,
     relTypes: DEFAULT_REL_TYPES.slice(),
     users: {},
-    currentUser: null
+    currentUser: null,
+    lastSeenRevision: '',
+    syncConflictActive: false,
+    localEditsSinceConflict: 0
   };
   let authMode = 'login';
   const logFilterState = {
     session: 'all',
     query: ''
   };
+  const messageFilterState = {
+    mode: 'all'
+  };
+  const deferredSaveTimers = new Map();
   let eventListenersBound = false;
+  let saveStateTimer = null;
+  let isApplyingUndo = false;
   const RulesEngine = (typeof window !== 'undefined' && window.SpireRulesEngine) ? window.SpireRulesEngine : {
     getRulesConfig(camp) {
       const defaults = { difficultyDowngrades: true, falloutCheckOnStress: true, clearStressOnFallout: true };
@@ -587,23 +630,35 @@
       darkMode: false,
       owner: state.currentUser || null,
       gmUsers: state.currentUser ? [state.currentUser] : [],
+      memberUsers: state.currentUser ? [state.currentUser] : [],
+      inviteCode: '',
+      sourceInviteCode: '',
       relTypes: DEFAULT_REL_TYPES.slice(),
       playerOwnedPcId: null,
       currentSession: 1,
       ministryAttention: 0,   // 0-10 Ministry attention level
       rulesProfile: 'Core',
+      entitySort: 'manual',
+      entityPinnedOnly: false,
       customRules: {
         difficultyDowngrades: true,
         falloutCheckOnStress: true,
         clearStressOnFallout: true
       },
+      falloutGuidance: defaultFalloutGuidance(),
       graphViews: {},
       sectionCollapse: {},    // persistent collapse state per entity+section
+      taskViewByPc: {},
+      taskSortByPc: {},
+      sessionPrepTasksOnly: false,
       entities: {},
       relationships: {},
       positions: {},
       logs: [],
-      messages: []
+      messages: [],
+      clocks: [],
+      relationshipUndo: {},
+      undoStack: []
     };
   }
 
@@ -880,6 +935,82 @@
     }
   }
 
+  function loadSharedInvites() {
+    try {
+      const raw = localStorage.getItem('spire-shared-invites');
+      return raw ? (JSON.parse(raw) || {}) : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function saveSharedInvites(data) {
+    try {
+      localStorage.setItem('spire-shared-invites', JSON.stringify(data || {}));
+    } catch (e) {
+      console.warn('Failed to save shared invites', e);
+    }
+  }
+
+  function generateInviteCode() {
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let out = '';
+    for (let i = 0; i < 8; i += 1) out += alphabet[Math.floor(Math.random() * alphabet.length)];
+    return out;
+  }
+
+  function publishCampaignInvite(camp) {
+    if (!camp || !camp.inviteCode || !camp.owner) return;
+    const code = String(camp.inviteCode).trim().toUpperCase();
+    if (!code) return;
+    if (!Array.isArray(camp.memberUsers)) camp.memberUsers = camp.owner ? [camp.owner] : [];
+    if (camp.owner && !camp.memberUsers.includes(camp.owner)) camp.memberUsers.unshift(camp.owner);
+    if (!Array.isArray(camp.gmUsers)) camp.gmUsers = camp.owner ? [camp.owner] : [];
+    if (camp.owner && !camp.gmUsers.includes(camp.owner)) camp.gmUsers.unshift(camp.owner);
+
+    const shared = loadSharedInvites();
+    const existing = shared[code];
+    const existingMembers = Array.isArray(existing?.data?.memberUsers) ? existing.data.memberUsers : [];
+    camp.memberUsers = Array.from(new Set([...(camp.memberUsers || []), ...existingMembers]));
+
+    const payload = JSON.parse(JSON.stringify(camp));
+    payload.undoStack = [];
+    shared[code] = {
+      code,
+      owner: camp.owner,
+      name: camp.name,
+      updatedAt: new Date().toISOString(),
+      data: payload
+    };
+    saveSharedInvites(shared);
+  }
+
+  function revokeCampaignInvite(camp) {
+    if (!camp || !camp.inviteCode) return;
+    const code = String(camp.inviteCode).trim().toUpperCase();
+    const shared = loadSharedInvites();
+    delete shared[code];
+    saveSharedInvites(shared);
+  }
+
+  function syncOwnedSharedInvites() {
+    if (!state.currentUser) return;
+    const shared = loadSharedInvites();
+    // Remove stale records owned by current user when campaign/code is gone.
+    Object.keys(shared).forEach((code) => {
+      const rec = shared[code];
+      if (!rec || rec.owner !== state.currentUser) return;
+      const stillExists = Object.values(state.campaigns || {}).some((camp) =>
+        camp.owner === state.currentUser && String(camp.inviteCode || '').toUpperCase() === code
+      );
+      if (!stillExists) delete shared[code];
+    });
+    saveSharedInvites(shared);
+    Object.values(state.campaigns || {}).forEach((camp) => {
+      if (camp.owner === state.currentUser && camp.inviteCode) publishCampaignInvite(camp);
+    });
+  }
+
   async function hashPassword(password) {
     const text = String(password || '');
     if (window.crypto && window.crypto.subtle && window.TextEncoder) {
@@ -895,8 +1026,10 @@
       if (!state.currentUser) {
         state.campaigns = {};
         state.currentCampaignId = null;
+        state.lastSeenRevision = '';
         return true;
       }
+      state.lastSeenRevision = localStorage.getItem(userScopedKey('spire-campaigns-rev')) || '';
       const raw = localStorage.getItem(userScopedKey('spire-campaigns'));
       if (raw) {
         const parsed = JSON.parse(raw);
@@ -925,20 +1058,47 @@
   /**
    * Save campaigns and current campaign id back into localStorage.
    */
-  function saveCampaigns() {
+  function conflictWarningText() {
+    const edits = Number(state.localEditsSinceConflict || 0);
+    if (!state.syncConflictActive) return 'Updated in another tab';
+    if (edits <= 0) return 'Updated in another tab';
+    return `Updated in another tab (${edits} local change${edits === 1 ? '' : 's'} pending)`;
+  }
+
+  function saveCampaigns(options = {}) {
+    const force = !!options.force;
+    if (state.syncConflictActive && !force) {
+      state.localEditsSinceConflict = (state.localEditsSinceConflict || 0) + 1;
+      setSyncConflictWarning(true, conflictWarningText());
+      setSaveState('error', 'Sync conflict');
+      return false;
+    }
+    setSaveState('saving');
     try {
-      if (!state.currentUser) return;
+      if (!state.currentUser) {
+        setSaveState('saved');
+        return true;
+      }
       const data = {
         campaigns: state.campaigns,
         currentCampaignId: state.currentCampaignId
       };
       const serialized = JSON.stringify(data);
       localStorage.setItem(userScopedKey('spire-campaigns'), serialized);
+      const revisionToken = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      localStorage.setItem(userScopedKey('spire-campaigns-rev'), revisionToken);
+      state.lastSeenRevision = revisionToken;
       // Keep a rolling backup for quick manual recovery.
       localStorage.setItem(userScopedKey('spire-campaigns-backup'), serialized);
       localStorage.setItem(userScopedKey('spire-campaigns-backup-ts'), new Date().toISOString());
+      syncOwnedSharedInvites();
+      setSaveState('saved');
+      setSyncConflictWarning(false);
+      return true;
     } catch (e) {
       console.warn('Save failed', e);
+      setSaveState('error');
+      return false;
     }
   }
 
@@ -1013,6 +1173,143 @@
     });
   }
 
+  function getRecentEntityActions(entityId, limit = 12) {
+    const camp = currentCampaign();
+    if (!entityId || !camp || !Array.isArray(camp.logs)) return [];
+    return camp.logs
+      .filter((entry) => entry && entry.type !== 'session' && entry.target === entityId)
+      .slice()
+      .reverse()
+      .slice(0, limit);
+  }
+
+  function updateUndoButtonState() {
+    const btn = document.getElementById('undo-btn');
+    if (!btn) return;
+    const camp = currentCampaign();
+    const hasUndo = !!(camp && Array.isArray(camp.undoStack) && camp.undoStack.length);
+    btn.disabled = !hasUndo;
+    btn.title = hasUndo
+      ? `Undo: ${camp.undoStack[camp.undoStack.length - 1].label || 'last action'}`
+      : 'Nothing to undo';
+  }
+
+  function captureUndoSnapshot(label = 'Change') {
+    if (isApplyingUndo) return;
+    const camp = currentCampaign();
+    if (!camp) return;
+    if (!Array.isArray(camp.undoStack)) camp.undoStack = [];
+    const snapshot = JSON.parse(JSON.stringify(camp));
+    snapshot.undoStack = [];
+    camp.undoStack.push({
+      id: generateId('undo'),
+      time: new Date().toISOString(),
+      label,
+      snapshot
+    });
+    if (camp.undoStack.length > 20) camp.undoStack.shift();
+    updateUndoButtonState();
+  }
+
+  function ensureRelationshipUndoStore(camp = currentCampaign()) {
+    if (!camp.relationshipUndo || typeof camp.relationshipUndo !== 'object') camp.relationshipUndo = {};
+  }
+
+  function pushRelationshipUndo(relId, label = 'Edit relationship') {
+    const camp = currentCampaign();
+    const rel = camp && camp.relationships ? camp.relationships[relId] : null;
+    if (!camp || !rel) return;
+    ensureRelationshipUndoStore(camp);
+    if (!Array.isArray(camp.relationshipUndo[relId])) camp.relationshipUndo[relId] = [];
+    camp.relationshipUndo[relId].push({
+      id: generateId('rundo'),
+      time: new Date().toISOString(),
+      label,
+      data: JSON.parse(JSON.stringify(rel))
+    });
+    if (camp.relationshipUndo[relId].length > 30) camp.relationshipUndo[relId].shift();
+  }
+
+  function undoRelationshipEdit(relId) {
+    const camp = currentCampaign();
+    const rel = camp && camp.relationships ? camp.relationships[relId] : null;
+    if (!camp || !rel) return;
+    ensureRelationshipUndoStore(camp);
+    const stack = camp.relationshipUndo[relId];
+    if (!Array.isArray(stack) || !stack.length) {
+      showToast('No relationship edits to undo.', 'warn');
+      return;
+    }
+    const entry = stack.pop();
+    camp.relationships[relId] = JSON.parse(JSON.stringify(entry.data || rel));
+    appendLog('Undid relationship edit', relId);
+    saveAndRefresh();
+    selectRelationship(relId);
+  }
+
+  function ensureSectionUndoStore(ent) {
+    if (!ent || typeof ent !== 'object') return;
+    if (!ent.sectionUndo || typeof ent.sectionUndo !== 'object') ent.sectionUndo = {};
+    ['tasks', 'inventory', 'bonds'].forEach((k) => {
+      if (!Array.isArray(ent.sectionUndo[k])) ent.sectionUndo[k] = [];
+    });
+  }
+
+  function pushSectionUndo(ent, sectionKey, label = 'Edit section') {
+    if (!ent || !sectionKey) return;
+    ensureSectionUndoStore(ent);
+    const sectionData = Array.isArray(ent[sectionKey]) ? ent[sectionKey] : [];
+    ent.sectionUndo[sectionKey].push({
+      id: generateId('sundo'),
+      time: new Date().toISOString(),
+      label,
+      data: JSON.parse(JSON.stringify(sectionData))
+    });
+    if (ent.sectionUndo[sectionKey].length > 20) ent.sectionUndo[sectionKey].shift();
+  }
+
+  function undoSection(ent, sectionKey, emptyMsg = 'Nothing to undo.') {
+    if (!ent || !sectionKey) return;
+    ensureSectionUndoStore(ent);
+    const stack = ent.sectionUndo[sectionKey];
+    if (!stack.length) {
+      showToast(emptyMsg, 'warn');
+      return;
+    }
+    const entry = stack.pop();
+    ent[sectionKey] = JSON.parse(JSON.stringify(entry.data || []));
+    appendLog(`Undid ${sectionKey} change`, ent.id);
+    saveAndRefresh();
+  }
+
+  function sectionUndoTitle(ent, sectionKey, emptyMsg = 'Nothing to undo.') {
+    ensureSectionUndoStore(ent);
+    const stack = ent.sectionUndo[sectionKey];
+    if (!stack || !stack.length) return emptyMsg;
+    const last = stack[stack.length - 1];
+    const when = last.time ? new Date(last.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+    return `Undo: ${last.label || 'last change'}${when ? ` (${when})` : ''}`;
+  }
+
+  function undoLastDestructiveAction() {
+    const camp = currentCampaign();
+    if (!camp || !Array.isArray(camp.undoStack) || !camp.undoStack.length) {
+      showToast('Nothing to undo.', 'warn');
+      return;
+    }
+    const entry = camp.undoStack.pop();
+    const restored = JSON.parse(JSON.stringify(entry.snapshot || {}));
+    restored.undoStack = camp.undoStack.slice();
+    isApplyingUndo = true;
+    state.campaigns[state.currentCampaignId] = restored;
+    isApplyingUndo = false;
+    saveAndRefresh();
+    renderLog();
+    renderSessionPrep();
+    updateUndoButtonState();
+    showToast(`Undid: ${entry.label || 'last change'}`, 'info');
+  }
+
   function deleteEntity(entityId, options = {}) {
     const camp = currentCampaign();
     const ent = camp.entities[entityId];
@@ -1069,6 +1366,7 @@
       'Delete Entity'
     );
     if (!ok) return;
+    captureUndoSnapshot(`Delete ${ent.type.toUpperCase()} "${entityLabel(ent)}"`);
     if (deleteEntity(entityId, { actionLabel })) {
       saveAndRefresh();
     }
@@ -1076,9 +1374,11 @@
 
   async function confirmAndDeleteRelationship(relId, actionLabel) {
     const camp = currentCampaign();
-    if (!camp.relationships[relId]) return;
+    const rel = camp.relationships[relId];
+    if (!rel) return;
     const ok = await askConfirm('Are you sure you want to delete this relationship?', 'Delete Relationship');
     if (!ok) return;
+    captureUndoSnapshot(`Delete relationship ${rel.type || ''}`.trim());
     if (deleteRelationship(relId, { actionLabel })) {
       saveAndRefresh();
       const inspector = document.getElementById('inspector');
@@ -1204,6 +1504,12 @@
   function renderEntityLists() {
     const camp = currentCampaign();
     const searchTerm = document.getElementById('search-input').value.trim().toLowerCase();
+    const sortMode = ['manual', 'name', 'pinned'].includes(camp.entitySort) ? camp.entitySort : 'manual';
+    const sortSelect = document.getElementById('entity-sort-select');
+    if (sortSelect && sortSelect.value !== sortMode) sortSelect.value = sortMode;
+    const pinnedOnly = !!camp.entityPinnedOnly;
+    const pinOnlyChk = document.getElementById('entity-pin-only');
+    if (pinOnlyChk) pinOnlyChk.checked = pinnedOnly;
     const lists = {
       pc:  document.getElementById('pc-list'),
       npc: document.getElementById('npc-list'),
@@ -1214,10 +1520,26 @@
     Object.values(lists).forEach(l => { l.innerHTML = ''; });
 
     // Populate
-    Object.values(camp.entities).forEach(ent => {
+    const entities = Object.values(camp.entities).filter((ent) => {
       if (!state.gmMode && ent.gmOnly) return;
+      if (pinnedOnly && !ent.pinned) return;
       const label = entityLabel(ent).toLowerCase();
       if (searchTerm && !label.includes(searchTerm)) return;
+      return true;
+    });
+    entities.sort((a, b) => {
+      if (sortMode === 'name') {
+        return entityLabel(a).localeCompare(entityLabel(b), undefined, { sensitivity: 'base' });
+      }
+      if (sortMode === 'pinned') {
+        const aPinned = !!a.pinned;
+        const bPinned = !!b.pinned;
+        if (aPinned !== bPinned) return aPinned ? -1 : 1;
+        return entityLabel(a).localeCompare(entityLabel(b), undefined, { sensitivity: 'base' });
+      }
+      return 0;
+    });
+    entities.forEach(ent => {
 
       const li = document.createElement('li');
       li.dataset.id = ent.id;
@@ -1236,12 +1558,34 @@
       name.textContent = entityLabel(ent) || '(Unnamed)';
       li.appendChild(name);
 
+      const meta = document.createElement('span');
+      meta.className = 'entity-meta';
+
+      if (state.gmMode) {
+        const pinBtn = document.createElement('button');
+        pinBtn.type = 'button';
+        pinBtn.className = 'entity-pin-btn' + (ent.pinned ? ' active' : '');
+        pinBtn.title = ent.pinned ? 'Unpin' : 'Pin';
+        pinBtn.setAttribute('aria-label', ent.pinned ? 'Unpin entity' : 'Pin entity');
+        pinBtn.textContent = ent.pinned ? '★' : '☆';
+        pinBtn.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          ent.pinned = !ent.pinned;
+          appendLog(ent.pinned ? 'Pinned entity' : 'Unpinned entity', ent.id);
+          saveCampaigns();
+          renderEntityLists();
+          showToast(ent.pinned ? 'Pinned entity.' : 'Unpinned entity.', 'info');
+        });
+        meta.appendChild(pinBtn);
+      }
+
       // GM-only badge
       if (ent.gmOnly && state.gmMode) {
         const b = document.createElement('span');
         b.className = 'gm-badge';
         b.textContent = 'GM';
-        li.appendChild(b);
+        meta.appendChild(b);
       }
 
       // Pending approval badge (visible to both GM and the submitting player)
@@ -1249,8 +1593,9 @@
         const b = document.createElement('span');
         b.className = 'pending-badge';
         b.textContent = 'Pending';
-        li.appendChild(b);
+        meta.appendChild(b);
       }
+      if (meta.children.length) li.appendChild(meta);
 
       li.addEventListener('click', () => {
         state.selectedRelId = null;
@@ -1274,6 +1619,7 @@
       const el = document.getElementById(t + '-count');
       if (el) el.textContent = lists[t].children.length;
     });
+    ensureAccessibilityLabels(document.getElementById('sidebar'));
   }
 
   /**
@@ -1298,6 +1644,63 @@
     renderEntityLists();
     renderSheetView();
     // Optionally open inspector panel automatically for small screens
+  }
+
+  function visibleEntityOrder() {
+    const order = [];
+    ['pc-list', 'npc-list', 'org-list'].forEach((listId) => {
+      const list = document.getElementById(listId);
+      if (!list) return;
+      Array.from(list.querySelectorAll('li[data-id]')).forEach((li) => {
+        const id = li.dataset.id;
+        if (id) order.push(id);
+      });
+    });
+    return order;
+  }
+
+  function selectAdjacentEntity(step = 1) {
+    const ids = visibleEntityOrder();
+    if (!ids.length) return;
+    const current = state.selectedEntityId;
+    const idx = ids.indexOf(current);
+    const nextIdx = idx === -1
+      ? 0
+      : (idx + step + ids.length) % ids.length;
+    selectEntity(ids[nextIdx]);
+    const sheetsTab = document.querySelector('.tab-link[data-tab="sheets-view"]');
+    if (sheetsTab) sheetsTab.click();
+  }
+
+  function selectAdjacentTab(step = 1) {
+    const tabs = Array.from(document.querySelectorAll('.tab-link'));
+    if (!tabs.length) return;
+    const current = document.querySelector('.tab-link.active');
+    const idx = Math.max(0, tabs.indexOf(current));
+    const nextIdx = (idx + step + tabs.length) % tabs.length;
+    const btn = tabs[nextIdx];
+    if (btn) btn.click();
+  }
+
+  function quickAddTaskToSelectedPC() {
+    const camp = currentCampaign();
+    const ent = state.selectedEntityId ? camp.entities[state.selectedEntityId] : null;
+    if (!ent || ent.type !== 'pc') {
+      showToast('Select a PC sheet first to add a task.', 'warn');
+      return;
+    }
+    const isOwnPC = !state.gmMode && camp.playerOwnedPcId === ent.id && camp.allowPlayerEditing;
+    const canEditPC = state.gmMode || isOwnPC;
+    if (!canEditPC) {
+      showToast('You cannot edit this character.', 'warn');
+      return;
+    }
+    if (!Array.isArray(ent.tasks)) ent.tasks = [];
+    ensureSectionUndoStore(ent);
+    pushSectionUndo(ent, 'tasks', 'Quick add task');
+    ent.tasks.push({ id: generateId('task'), title: '', status: 'To Do', priority: 'Normal', dueDate: '', notes: '' });
+    appendLog('Added task', ent.id);
+    saveAndRefresh();
   }
 
   /**
@@ -1352,6 +1755,7 @@
     advances: 'Spend Advance Points earned through play to unlock new abilities. Low advances cost 1 AP, Medium 2 AP, High 3 AP. You must have 2 Low advances before taking Medium, and 2 Medium before High.',
     inventory: 'Your carried equipment. Weapons deal stress on a hit. Armour reduces incoming stress by its resistance value.',
     tasks: 'Ongoing objectives and quests. Track status and priority here.',
+    history: 'Recent changes and actions recorded for this character sheet.',
     ministry: 'The Ministry of Our Lady of the Dual Chain — the Aelfir rulers of Spire — may be aware of your activities. Higher attention means more scrutiny and danger.'
   };
 
@@ -1430,8 +1834,12 @@
     consolidateResistances(pc);
     // Migrate missing fields
     if (!Array.isArray(pc.bonds)) pc.bonds = [];
+    ensureSectionUndoStore(pc);
     if (pc.refreshed === undefined) pc.refreshed = false;
     if (pc.advancePoints === undefined) pc.advancePoints = 0;
+    const campPerm = currentCampaign();
+    const isOwnPC = !state.gmMode && pc.type === 'pc' && campPerm.playerOwnedPcId === pc.id && campPerm.allowPlayerEditing;
+    const canEditPC = state.gmMode || isOwnPC;
     container.innerHTML = '';
     // Title row: name + action buttons
     const title = document.createElement('div');
@@ -1475,6 +1883,14 @@
     printBtn.textContent = 'Print';
     printBtn.addEventListener('click', () => printEntitySheet(pc.id));
     titleBtns.appendChild(printBtn);
+    if (state.gmMode) {
+      const printPlayerBtn = document.createElement('button');
+      printPlayerBtn.className = 'print-btn';
+      printPlayerBtn.textContent = 'Print Player Copy';
+      printPlayerBtn.title = 'One-click player-safe print';
+      printPlayerBtn.addEventListener('click', () => printEntitySheet(pc.id, { forcePlayerSafe: true }));
+      titleBtns.appendChild(printPlayerBtn);
+    }
     title.appendChild(titleBtns);
     container.appendChild(title);
 
@@ -1666,6 +2082,16 @@
       });
       stressSection.appendChild(clearBtn);
     }
+    const applyStressBtn = document.createElement('button');
+    applyStressBtn.textContent = 'Apply Stress…';
+    applyStressBtn.style.marginTop = '6px';
+    applyStressBtn.style.marginLeft = '6px';
+    applyStressBtn.style.fontSize = '0.78rem';
+    applyStressBtn.disabled = !canEditPC;
+    applyStressBtn.addEventListener('click', () => {
+      openStressApplicationModal(pc);
+    });
+    stressSection.appendChild(applyStressBtn);
     leftCol.appendChild(stressSection);
 
     // Fallout section → left col
@@ -1686,6 +2112,13 @@
       resolvedHeader.textContent = 'Resolved';
       falloutBody.appendChild(resolvedHeader);
       resolvedFallout.forEach(f => falloutBody.appendChild(createFalloutRow(pc, f)));
+    }
+    if (!activeFallout.length && !resolvedFallout.length) {
+      const empty = document.createElement('p');
+      empty.className = 'text-muted';
+      empty.style.fontSize = '0.82rem';
+      empty.textContent = 'No fallout recorded. Add fallout when stress checks trigger consequences.';
+      falloutBody.appendChild(empty);
     }
     const addFalloutBtn = document.createElement('button');
     addFalloutBtn.textContent = '+ Add Fallout';
@@ -1712,7 +2145,7 @@
       rollBtn.textContent = 'Roll';
       rollBtn.title = `Roll D10 against ${r.name} resistance`;
       rollBtn.addEventListener('click', () => {
-        openDiceRollerForResistance(r.name, parseInt(r.value || 0, 10));
+        openDiceRollerForResistance(r.name, parseInt(r.value || 0, 10), pc);
       });
       // Stress bar for this track
       const track = r.name.toLowerCase();
@@ -1763,28 +2196,72 @@
         if (bond.level === lv) o.selected = true;
         lvlSel.appendChild(o);
       });
-      lvlSel.addEventListener('change', e => { bond.level = e.target.value; saveAndRefresh(); });
+      lvlSel.addEventListener('change', e => {
+        pushSectionUndo(pc, 'bonds', 'Edit bond level');
+        bond.level = e.target.value;
+        appendLog('Edited bond', pc.id);
+        saveWithoutRefresh();
+      });
       const nameIn = document.createElement('input');
       nameIn.type = 'text'; nameIn.placeholder = 'Bond name or person';
       nameIn.value = bond.name || '';
-      nameIn.addEventListener('change', e => { bond.name = e.target.value; saveAndRefresh(); });
+      nameIn.addEventListener('input', e => {
+        bond.name = e.target.value;
+        queueDeferredSave(`bond-name:${pc.id}:${bond.id}`);
+      });
+      nameIn.addEventListener('change', e => {
+        pushSectionUndo(pc, 'bonds', 'Edit bond name');
+        bond.name = e.target.value;
+        appendLog('Edited bond', pc.id);
+        saveWithoutRefresh();
+      });
       const notesIn = document.createElement('input');
       notesIn.type = 'text'; notesIn.placeholder = 'Notes';
       notesIn.value = bond.notes || '';
-      notesIn.addEventListener('change', e => { bond.notes = e.target.value; saveAndRefresh(); });
+      notesIn.addEventListener('input', e => {
+        bond.notes = e.target.value;
+        queueDeferredSave(`bond-notes:${pc.id}:${bond.id}`);
+      });
+      notesIn.addEventListener('change', e => {
+        pushSectionUndo(pc, 'bonds', 'Edit bond notes');
+        bond.notes = e.target.value;
+        appendLog('Edited bond', pc.id);
+        saveWithoutRefresh();
+      });
       const remBtn = document.createElement('button');
       remBtn.textContent = '×'; remBtn.className = 'row-remove-btn';
-      remBtn.addEventListener('click', () => { pc.bonds = pc.bonds.filter(b => b.id !== bond.id); saveAndRefresh(); });
+      remBtn.addEventListener('click', () => {
+        pushSectionUndo(pc, 'bonds', 'Remove bond');
+        pc.bonds = pc.bonds.filter(b => b.id !== bond.id);
+        saveAndRefresh();
+      });
       bRow.appendChild(lvlSel); bRow.appendChild(nameIn); bRow.appendChild(notesIn); bRow.appendChild(remBtn);
       bondBody.appendChild(bRow);
     });
+    if (!pc.bonds.length) {
+      const emptyBond = document.createElement('p');
+      emptyBond.className = 'text-muted';
+      emptyBond.style.fontSize = '0.82rem';
+      emptyBond.textContent = 'No bonds yet. Add allies, factions, or personal ties.';
+      bondBody.appendChild(emptyBond);
+    }
     const addBondBtn = document.createElement('button');
     addBondBtn.textContent = '+ Add Bond';
     addBondBtn.addEventListener('click', () => {
+      pushSectionUndo(pc, 'bonds', 'Add bond');
       pc.bonds.push({ id: generateId('bond'), level: 'Individual', name: '', notes: '' });
       saveAndRefresh();
     });
+    const undoBondBtn = document.createElement('button');
+    undoBondBtn.type = 'button';
+    undoBondBtn.textContent = 'Undo Bonds';
+    undoBondBtn.disabled = !(pc.sectionUndo && pc.sectionUndo.bonds && pc.sectionUndo.bonds.length);
+    undoBondBtn.title = sectionUndoTitle(pc, 'bonds', 'No bond changes to undo.');
+    undoBondBtn.addEventListener('click', () => {
+      undoSection(pc, 'bonds', 'No bond changes to undo.');
+    });
     bondBody.appendChild(addBondBtn);
+    bondBody.appendChild(undoBondBtn);
     leftCol.appendChild(bondSec);
 
     // Skills → right col (with Roll buttons and Mastered toggle)
@@ -1832,6 +2309,32 @@
     rightCol.appendChild(domainsSec);
     rightCol.appendChild(resSec);
 
+    const { sec: histSec, body: histBody } = makeSection('history', 'Action History', 'history', pc);
+    const historyEntries = getRecentEntityActions(pc.id, 14);
+    if (!historyEntries.length) {
+      const none = document.createElement('p');
+      none.className = 'text-muted';
+      none.style.fontSize = '0.82rem';
+      none.textContent = 'No recent actions recorded for this character.';
+      histBody.appendChild(none);
+    } else {
+      const list = document.createElement('ul');
+      list.className = 'entity-history-list';
+      historyEntries.forEach((entry) => {
+        const li = document.createElement('li');
+        const time = document.createElement('time');
+        time.dateTime = entry.time;
+        time.textContent = new Date(entry.time).toLocaleString();
+        const text = document.createElement('span');
+        text.textContent = ' ' + entry.action;
+        li.appendChild(time);
+        li.appendChild(text);
+        list.appendChild(li);
+      });
+      histBody.appendChild(list);
+    }
+    rightCol.appendChild(histSec);
+
     // Class features section: shows information and options derived from
     // the selected class. Includes refresh text, bond prompts, inventory
     // kit selection, core ability toggles and advances checkboxes.
@@ -1867,10 +2370,14 @@
           const textarea = document.createElement('textarea');
           textarea.value = pc.classBondResponses[idx] || '';
           textarea.placeholder = 'Response...';
+          textarea.addEventListener('input', e => {
+            pc.classBondResponses[idx] = e.target.value;
+            queueDeferredSave(`class-bond:${pc.id}:${idx}`);
+          });
           textarea.addEventListener('change', e => {
             pc.classBondResponses[idx] = e.target.value;
             appendLog('Edited class bond response', pc.id);
-            saveAndRefresh();
+            saveWithoutRefresh();
           });
           textarea.className = 'class-bond-response';
           promptDiv.appendChild(label);
@@ -2058,6 +2565,17 @@
         const medTaken = (classEff.advances.medium || []).filter(a => pc.advances.includes(a)).length;
         const medUnlocked = lowTaken >= 2;
         const highUnlocked = medTaken >= 2;
+        const prog = document.createElement('div');
+        prog.className = 'text-muted';
+        prog.style.fontSize = '0.82rem';
+        prog.style.marginBottom = '6px';
+        const nextUnlock = !medUnlocked
+          ? `Need ${Math.max(0, 2 - lowTaken)} more Low advance(s) to unlock Medium`
+          : !highUnlocked
+            ? `Need ${Math.max(0, 2 - medTaken)} more Medium advance(s) to unlock High`
+            : 'All tiers unlocked';
+        prog.textContent = `Progress: Low ${lowTaken}/2, Medium ${medTaken}/2. ${nextUnlock}.`;
+        advDiv.appendChild(prog);
 
         renderAdvList('low', classEff.advances.low, true, true);
         renderAdvList('medium', classEff.advances.medium, medUnlocked, medUnlocked);
@@ -2069,22 +2587,151 @@
     // Inventory → below bonds (left col)
     const { sec: invSecEl, body: invBody } = makeSection('inventory', 'Inventory', 'inventory', pc);
     pc.inventory.forEach(item => invBody.appendChild(createInventoryRow(pc, item)));
+    if (!pc.inventory.length) {
+      const emptyInv = document.createElement('p');
+      emptyInv.className = 'text-muted';
+      emptyInv.style.fontSize = '0.82rem';
+      emptyInv.textContent = 'No inventory yet. Add gear, weapons, and armor.';
+      invBody.appendChild(emptyInv);
+    }
     const addItemBtn = document.createElement('button');
     addItemBtn.textContent = '+ Add Item';
     addItemBtn.addEventListener('click', () => {
+      pushSectionUndo(pc, 'inventory', 'Add inventory item');
       pc.inventory.push({ id: generateId('item'), type: 'other', item: '', quantity: 1, tags: [], notes: '', stress: undefined, resistance: undefined });
       appendLog('Added inventory item', pc.id);
       saveAndRefresh();
     });
+    const undoInvBtn = document.createElement('button');
+    undoInvBtn.type = 'button';
+    undoInvBtn.textContent = 'Undo Inventory';
+    undoInvBtn.disabled = !(pc.sectionUndo && pc.sectionUndo.inventory && pc.sectionUndo.inventory.length);
+    undoInvBtn.title = sectionUndoTitle(pc, 'inventory', 'No inventory changes to undo.');
+    undoInvBtn.addEventListener('click', () => {
+      undoSection(pc, 'inventory', 'No inventory changes to undo.');
+    });
     invBody.appendChild(addItemBtn);
+    invBody.appendChild(undoInvBtn);
     leftCol.appendChild(invSecEl);
 
     // Tasks → below inventory (left col)
     const { sec: taskSecEl, body: taskBody } = makeSection('tasks', 'Tasks / Quests', 'tasks', pc);
-    pc.tasks.forEach(task => taskBody.appendChild(createTaskRow(pc, task)));
+    if (!campPerm.taskViewByPc) campPerm.taskViewByPc = {};
+    if (!campPerm.taskSortByPc) campPerm.taskSortByPc = {};
+    const taskView = campPerm.taskViewByPc[pc.id] || 'all';
+    const taskSort = campPerm.taskSortByPc[pc.id] || 'none';
+    const taskControls = document.createElement('div');
+    taskControls.className = 'task-controls-row';
+    taskControls.style.display = 'flex';
+    taskControls.style.gap = '6px';
+    taskControls.style.marginBottom = '6px';
+    const taskFilterSel = document.createElement('select');
+    [
+      { value: 'all', label: 'All Tasks' },
+      { value: 'open', label: 'Open Only' },
+      { value: 'done', label: 'Done Only' },
+      { value: 'urgent', label: 'Urgent Only' }
+    ].forEach((optData) => {
+      const opt = document.createElement('option');
+      opt.value = optData.value;
+      opt.textContent = optData.label;
+      if (taskView === optData.value) opt.selected = true;
+      taskFilterSel.appendChild(opt);
+    });
+    taskFilterSel.addEventListener('change', (e) => {
+      campPerm.taskViewByPc[pc.id] = e.target.value || 'all';
+      saveAndRefresh();
+    });
+    taskControls.appendChild(taskFilterSel);
+    const taskSortSel = document.createElement('select');
+    [
+      { value: 'none', label: 'Sort: Manual' },
+      { value: 'priority', label: 'Sort: Priority' },
+      { value: 'due', label: 'Sort: Due Date' },
+      { value: 'status', label: 'Sort: Status' }
+    ].forEach((optData) => {
+      const opt = document.createElement('option');
+      opt.value = optData.value;
+      opt.textContent = optData.label;
+      if (taskSort === optData.value) opt.selected = true;
+      taskSortSel.appendChild(opt);
+    });
+    taskSortSel.addEventListener('change', (e) => {
+      campPerm.taskSortByPc[pc.id] = e.target.value || 'none';
+      saveAndRefresh();
+    });
+    taskControls.appendChild(taskSortSel);
+    const clearDoneBtn = document.createElement('button');
+    clearDoneBtn.type = 'button';
+    clearDoneBtn.textContent = 'Clear Done';
+    clearDoneBtn.disabled = !canEditPC || !pc.tasks.some((t) => t.status === 'Done');
+    clearDoneBtn.addEventListener('click', () => {
+      pushSectionUndo(pc, 'tasks', 'Clear done tasks');
+      const before = pc.tasks.length;
+      pc.tasks = pc.tasks.filter((t) => t.status !== 'Done');
+      if (pc.tasks.length !== before) {
+        appendLog('Cleared done tasks', pc.id);
+        saveAndRefresh();
+      }
+    });
+    taskControls.appendChild(clearDoneBtn);
+    const undoTaskBtn = document.createElement('button');
+    undoTaskBtn.type = 'button';
+    undoTaskBtn.textContent = 'Undo Tasks';
+    undoTaskBtn.disabled = !(pc.sectionUndo && pc.sectionUndo.tasks && pc.sectionUndo.tasks.length);
+    undoTaskBtn.title = sectionUndoTitle(pc, 'tasks', 'No task changes to undo.');
+    undoTaskBtn.addEventListener('click', () => {
+      undoSection(pc, 'tasks', 'No task changes to undo.');
+    });
+    taskControls.appendChild(undoTaskBtn);
+    const taskHelpBtn = document.createElement('button');
+    taskHelpBtn.type = 'button';
+    taskHelpBtn.textContent = '?';
+    taskHelpBtn.title = 'Task shortcuts and keyboard help';
+    taskHelpBtn.addEventListener('click', () => openShortcutHelpModal());
+    taskControls.appendChild(taskHelpBtn);
+    taskBody.appendChild(taskControls);
+    const filteredTasks = pc.tasks.filter((task) => {
+      if (taskView === 'open') return task.status !== 'Done';
+      if (taskView === 'done') return task.status === 'Done';
+      if (taskView === 'urgent') return task.priority === 'Urgent';
+      return true;
+    });
+    const sortedTasks = filteredTasks.slice();
+    if (taskSort === 'priority') {
+      const rank = { Urgent: 0, High: 1, Normal: 2, Low: 3 };
+      sortedTasks.sort((a, b) => (rank[a.priority] ?? 99) - (rank[b.priority] ?? 99));
+    } else if (taskSort === 'due') {
+      sortedTasks.sort((a, b) => {
+        const ad = a.dueDate || '';
+        const bd = b.dueDate || '';
+        if (!ad && !bd) return 0;
+        if (!ad) return 1;
+        if (!bd) return -1;
+        return ad.localeCompare(bd);
+      });
+    } else if (taskSort === 'status') {
+      const rank = { 'To Do': 0, Doing: 1, Done: 2 };
+      sortedTasks.sort((a, b) => (rank[a.status] ?? 99) - (rank[b.status] ?? 99));
+    }
+    sortedTasks.forEach(task => taskBody.appendChild(createTaskRow(pc, task)));
+    if (!pc.tasks.length) {
+      const emptyTask = document.createElement('p');
+      emptyTask.className = 'text-muted';
+      emptyTask.style.fontSize = '0.82rem';
+      emptyTask.textContent = 'No tasks yet. Track objectives, leads, and quests here.';
+      taskBody.appendChild(emptyTask);
+    } else if (!filteredTasks.length) {
+      const emptyFilteredTask = document.createElement('p');
+      emptyFilteredTask.className = 'text-muted';
+      emptyFilteredTask.style.fontSize = '0.82rem';
+      emptyFilteredTask.textContent = 'No tasks match this filter.';
+      taskBody.appendChild(emptyFilteredTask);
+    }
     const addTaskBtn = document.createElement('button');
     addTaskBtn.textContent = '+ Add Task';
     addTaskBtn.addEventListener('click', () => {
+      pushSectionUndo(pc, 'tasks', 'Add task');
       pc.tasks.push({ id: generateId('task'), title: '', status: 'To Do', priority: 'Normal', dueDate: '', notes: '' });
       appendLog('Added task', pc.id);
       saveAndRefresh();
@@ -2099,7 +2746,15 @@
     const notesField = document.createElement('textarea');
     notesField.value = pc.notes || '';
     notesField.placeholder = 'Notes...';
-    notesField.addEventListener('change', e => { pc.notes = e.target.value; saveAndRefresh(); });
+    notesField.addEventListener('input', e => {
+      pc.notes = e.target.value;
+      queueDeferredSave(`pc-notes:${pc.id}`);
+    });
+    notesField.addEventListener('change', e => {
+      pc.notes = e.target.value;
+      appendLog('Edited notes', pc.id);
+      saveWithoutRefresh();
+    });
     notesSec.appendChild(notesField);
     container.appendChild(notesSec);
 
@@ -2110,7 +2765,15 @@
       const gmField = document.createElement('textarea');
       gmField.value = pc.gmNotes || '';
       gmField.placeholder = 'Secret notes visible only to GM...';
-      gmField.addEventListener('change', e => { pc.gmNotes = e.target.value; saveAndRefresh(); });
+      gmField.addEventListener('input', e => {
+        pc.gmNotes = e.target.value;
+        queueDeferredSave(`pc-gm-notes:${pc.id}`);
+      });
+      gmField.addEventListener('change', e => {
+        pc.gmNotes = e.target.value;
+        appendLog('Edited GM notes', pc.id);
+        saveWithoutRefresh();
+      });
       gmNotesSec.appendChild(gmField);
       container.appendChild(gmNotesSec);
     }
@@ -2132,6 +2795,14 @@
     printBtn.className = 'print-btn';
     printBtn.textContent = 'Print';
     printBtn.addEventListener('click', () => printEntitySheet(npc.id));
+    if (state.gmMode) {
+      const printPlayerBtn = document.createElement('button');
+      printPlayerBtn.className = 'print-btn';
+      printPlayerBtn.textContent = 'Print Player Copy';
+      printPlayerBtn.title = 'One-click player-safe print';
+      printPlayerBtn.addEventListener('click', () => printEntitySheet(npc.id, { forcePlayerSafe: true }));
+      title.appendChild(printPlayerBtn);
+    }
     if (state.gmMode) {
       const dupBtn = document.createElement('button');
       dupBtn.className = 'print-btn';
@@ -2224,7 +2895,7 @@
     affSelect.addEventListener('change', e => {
       npc.affiliation = e.target.value;
       appendLog('Changed affiliation', npc.id);
-      saveAndRefresh();
+      saveWithoutRefresh();
     });
     affField.appendChild(affLabel);
     affField.appendChild(affSelect);
@@ -2241,7 +2912,11 @@
       if ((npc.threatLevel || 'Minor') === t) o.selected = true;
       threatSel.appendChild(o);
     });
-    threatSel.addEventListener('change', e => { npc.threatLevel = e.target.value; saveAndRefresh(); });
+    threatSel.addEventListener('change', e => {
+      npc.threatLevel = e.target.value;
+      appendLog('Edited threat level', npc.id);
+      saveWithoutRefresh();
+    });
     threatField.appendChild(threatSel);
     identity.appendChild(threatField);
 
@@ -2256,7 +2931,11 @@
       if ((npc.disposition || 'Neutral') === d) o.selected = true;
       dispSel.appendChild(o);
     });
-    dispSel.addEventListener('change', e => { npc.disposition = e.target.value; saveAndRefresh(); });
+    dispSel.addEventListener('change', e => {
+      npc.disposition = e.target.value;
+      appendLog('Edited disposition', npc.id);
+      saveWithoutRefresh();
+    });
     dispField.appendChild(dispSel);
     identity.appendChild(dispField);
 
@@ -2269,7 +2948,15 @@
       inp.type = 'text';
       inp.placeholder = field === 'wants' ? 'What do they want?' : field === 'fears' ? 'What do they fear?' : 'What leverage do they have?';
       inp.value = npc[field] || '';
-      inp.addEventListener('change', e => { npc[field] = e.target.value; saveAndRefresh(); });
+      inp.addEventListener('input', e => {
+        npc[field] = e.target.value;
+        queueDeferredSave(`npc-${field}:${npc.id}`);
+      });
+      inp.addEventListener('change', e => {
+        npc[field] = e.target.value;
+        appendLog(`Edited ${field}`, npc.id);
+        saveWithoutRefresh();
+      });
       f.appendChild(inp);
       identity.appendChild(f);
     });
@@ -2357,6 +3044,13 @@
     npc.fallout.forEach(f => {
       falloutSection.appendChild(createFalloutRow(npc, f));
     });
+    if (!npc.fallout.length) {
+      const empty = document.createElement('p');
+      empty.className = 'text-muted';
+      empty.style.fontSize = '0.82rem';
+      empty.textContent = 'No fallout recorded for this NPC.';
+      falloutSection.appendChild(empty);
+    }
     const addFalloutBtn = document.createElement('button');
     addFalloutBtn.className = 'section-add-btn';
     addFalloutBtn.innerHTML = '<span class="material-icons" style="font-size:14px">add</span> Add Fallout';
@@ -2383,6 +3077,13 @@
     npc.inventory.forEach(item => {
       invSec.appendChild(createInventoryRow(npc, item));
     });
+    if (!npc.inventory.length) {
+      const empty = document.createElement('p');
+      empty.className = 'text-muted';
+      empty.style.fontSize = '0.82rem';
+      empty.textContent = 'No inventory recorded for this NPC.';
+      invSec.appendChild(empty);
+    }
     const addItemBtn = document.createElement('button');
     addItemBtn.className = 'section-add-btn';
     addItemBtn.innerHTML = '<span class="material-icons" style="font-size:14px">add</span> Add Item';
@@ -2410,10 +3111,14 @@
     const notesField = document.createElement('textarea');
     notesField.value = npc.notes || '';
     notesField.placeholder = 'Notes...';
+    notesField.addEventListener('input', e => {
+      npc.notes = e.target.value;
+      queueDeferredSave(`npc-notes:${npc.id}`);
+    });
     notesField.addEventListener('change', e => {
       npc.notes = e.target.value;
       appendLog('Edited notes', npc.id);
-      saveAndRefresh();
+      saveWithoutRefresh();
     });
     notesSec.appendChild(notesField);
     container.appendChild(notesSec);
@@ -2426,10 +3131,14 @@
       const gmField = document.createElement('textarea');
       gmField.value = npc.gmNotes || '';
       gmField.placeholder = 'Secret notes visible only to GM...';
+      gmField.addEventListener('input', e => {
+        npc.gmNotes = e.target.value;
+        queueDeferredSave(`npc-gm-notes:${npc.id}`);
+      });
       gmField.addEventListener('change', e => {
         npc.gmNotes = e.target.value;
         appendLog('Edited GM notes', npc.id);
-        saveAndRefresh();
+        saveWithoutRefresh();
       });
       gmSec.appendChild(gmField);
       container.appendChild(gmSec);
@@ -2453,6 +3162,14 @@
       printEntitySheet(org.id);
     });
     title.appendChild(printBtn);
+    if (state.gmMode) {
+      const printPlayerBtn = document.createElement('button');
+      printPlayerBtn.className = 'print-btn';
+      printPlayerBtn.textContent = 'Print Player Copy';
+      printPlayerBtn.title = 'One-click player-safe print';
+      printPlayerBtn.addEventListener('click', () => printEntitySheet(org.id, { forcePlayerSafe: true }));
+      title.appendChild(printPlayerBtn);
+    }
     container.appendChild(title);
     // Org duplicate button
     if (state.gmMode) {
@@ -2494,7 +3211,11 @@
       if ((org.reach || 'Local') === r) o.selected = true;
       reachSel.appendChild(o);
     });
-    reachSel.addEventListener('change', e => { org.reach = e.target.value; saveAndRefresh(); });
+    reachSel.addEventListener('change', e => {
+      org.reach = e.target.value;
+      appendLog('Edited reach', org.id);
+      saveWithoutRefresh();
+    });
     reachField.appendChild(reachSel);
     identitySec.appendChild(reachField);
 
@@ -2509,7 +3230,11 @@
       if ((org.ministryRelation || 'Unknown') === r) o.selected = true;
       minRelSel.appendChild(o);
     });
-    minRelSel.addEventListener('change', e => { org.ministryRelation = e.target.value; saveAndRefresh(); });
+    minRelSel.addEventListener('change', e => {
+      org.ministryRelation = e.target.value;
+      appendLog('Edited ministry relation', org.id);
+      saveWithoutRefresh();
+    });
     minRelField.appendChild(minRelSel);
     identitySec.appendChild(minRelField);
 
@@ -2521,10 +3246,14 @@
     const descField = document.createElement('textarea');
     descField.value = org.description || '';
     descField.placeholder = 'Description...';
+    descField.addEventListener('input', e => {
+      org.description = e.target.value;
+      queueDeferredSave(`org-desc:${org.id}`);
+    });
     descField.addEventListener('change', e => {
       org.description = e.target.value;
       appendLog('Edited description', org.id);
-      saveAndRefresh();
+      saveWithoutRefresh();
     });
     descSec.appendChild(descField);
     container.appendChild(descSec);
@@ -2539,11 +3268,38 @@
       const member = currentCampaign().entities[memId];
       if (!member || (!state.gmMode && member.gmOnly)) return;
       const li = document.createElement('li');
-      li.textContent = entityLabel(member);
+      li.style.display = 'flex';
+      li.style.alignItems = 'center';
+      li.style.justifyContent = 'space-between';
+      li.style.gap = '8px';
+      const memberName = document.createElement('span');
+      memberName.textContent = entityLabel(member);
+      li.appendChild(memberName);
       li.dataset.id = memId;
-      li.addEventListener('click', () => selectEntity(memId));
+      memberName.addEventListener('click', () => selectEntity(memId));
+      if (state.gmMode) {
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'row-remove-btn';
+        removeBtn.textContent = '×';
+        removeBtn.title = 'Remove member';
+        removeBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          org.members = org.members.filter((id) => id !== memId);
+          appendLog('Removed member', org.id);
+          saveAndRefresh();
+        });
+        li.appendChild(removeBtn);
+      }
       memberList.appendChild(li);
     });
+    if (!memberList.children.length) {
+      const emptyMembers = document.createElement('p');
+      emptyMembers.className = 'text-muted';
+      emptyMembers.style.fontSize = '0.82rem';
+      emptyMembers.textContent = 'No members yet. Add PCs/NPCs below.';
+      membersSec.appendChild(emptyMembers);
+    }
     membersSec.appendChild(memberList);
     // Member add via dropdown
     const addMemRow = document.createElement('div');
@@ -2585,10 +3341,14 @@
     const notesField = document.createElement('textarea');
     notesField.value = org.notes || '';
     notesField.placeholder = 'Notes...';
+    notesField.addEventListener('input', e => {
+      org.notes = e.target.value;
+      queueDeferredSave(`org-notes:${org.id}`);
+    });
     notesField.addEventListener('change', e => {
       org.notes = e.target.value;
       appendLog('Edited notes', org.id);
-      saveAndRefresh();
+      saveWithoutRefresh();
     });
     notesSec.appendChild(notesField);
     container.appendChild(notesSec);
@@ -2600,10 +3360,14 @@
       const gmField = document.createElement('textarea');
       gmField.value = org.gmNotes || '';
       gmField.placeholder = 'Secret notes visible only to GM...';
+      gmField.addEventListener('input', e => {
+        org.gmNotes = e.target.value;
+        queueDeferredSave(`org-gm-notes:${org.id}`);
+      });
       gmField.addEventListener('change', e => {
         org.gmNotes = e.target.value;
         appendLog('Edited GM notes', org.id);
-        saveAndRefresh();
+        saveWithoutRefresh();
       });
       gmSec.appendChild(gmField);
       container.appendChild(gmSec);
@@ -2635,10 +3399,18 @@
     if (!state.gmMode && ent.pendingApproval) {
       input.disabled = true;
     }
+    const nameProp = prop === 'name' || prop === 'firstName' || prop === 'lastName';
+    if (!nameProp) {
+      input.addEventListener('input', e => {
+        ent[prop] = e.target.value;
+        queueDeferredSave(`field:${ent.id}:${prop}`);
+      });
+    }
     input.addEventListener('change', e => {
       ent[prop] = e.target.value;
       appendLog(`Changed ${prop}`, ent.id);
-      saveAndRefresh();
+      if (nameProp) saveAndRefresh();
+      else saveWithoutRefresh();
     });
     wrapper.appendChild(input);
     return wrapper;
@@ -2724,6 +3496,179 @@
     return wrapper;
   }
 
+  function totalArmorResistance(pc) {
+    if (!pc || !Array.isArray(pc.inventory)) return 0;
+    return pc.inventory.reduce((sum, item) => {
+      if (item.type !== 'armor') return sum;
+      return sum + (parseInt(item.resistance, 10) || 0);
+    }, 0);
+  }
+
+  function openStressApplicationModal(pc) {
+    const overlay = document.getElementById('modal-overlay');
+    const modal = document.getElementById('modal');
+    const content = document.getElementById('modal-content');
+    const titleEl = document.getElementById('modal-title');
+    if (titleEl) titleEl.textContent = 'Apply Stress';
+    content.innerHTML = '';
+
+    const form = document.createElement('div');
+    form.className = 'modal-form';
+
+    const sourceField = document.createElement('div');
+    sourceField.className = 'modal-field';
+    const sourceLabel = document.createElement('label');
+    sourceLabel.textContent = 'Source';
+    const sourceSel = document.createElement('select');
+    ['Weapon', 'Fallout', 'Consequence', 'Cost', 'Other'].forEach((s) => {
+      const opt = document.createElement('option');
+      opt.value = s;
+      opt.textContent = s;
+      sourceSel.appendChild(opt);
+    });
+    sourceField.appendChild(sourceLabel);
+    sourceField.appendChild(sourceSel);
+    form.appendChild(sourceField);
+
+    const trackField = document.createElement('div');
+    trackField.className = 'modal-field';
+    const trackLabel = document.createElement('label');
+    trackLabel.textContent = 'Resistance Track';
+    const trackSel = document.createElement('select');
+    ['blood','mind','silver','shadow','reputation'].forEach((t) => {
+      const opt = document.createElement('option');
+      opt.value = t;
+      opt.textContent = t.charAt(0).toUpperCase() + t.slice(1);
+      trackSel.appendChild(opt);
+    });
+    trackField.appendChild(trackLabel);
+    trackField.appendChild(trackSel);
+    form.appendChild(trackField);
+
+    const amountField = document.createElement('div');
+    amountField.className = 'modal-field';
+    const amountLabel = document.createElement('label');
+    amountLabel.textContent = 'Incoming Stress';
+    const amountInput = document.createElement('input');
+    amountInput.type = 'number';
+    amountInput.min = '0';
+    amountInput.value = '1';
+    amountField.appendChild(amountLabel);
+    amountField.appendChild(amountInput);
+    form.appendChild(amountField);
+
+    const armorField = document.createElement('div');
+    armorField.className = 'modal-field modal-field-inline';
+    const armorChk = document.createElement('input');
+    armorChk.type = 'checkbox';
+    armorChk.checked = true;
+    const armorLabel = document.createElement('label');
+    armorLabel.textContent = 'Apply armor reduction automatically';
+    armorField.appendChild(armorChk);
+    armorField.appendChild(armorLabel);
+    form.appendChild(armorField);
+
+    const armorValueField = document.createElement('div');
+    armorValueField.className = 'modal-field';
+    const armorValueLabel = document.createElement('label');
+    armorValueLabel.textContent = 'Armor Reduction';
+    const armorValueInput = document.createElement('input');
+    armorValueInput.type = 'number';
+    armorValueInput.min = '0';
+    armorValueInput.value = String(totalArmorResistance(pc));
+    armorValueField.appendChild(armorValueLabel);
+    armorValueField.appendChild(armorValueInput);
+    form.appendChild(armorValueField);
+
+    const preview = document.createElement('div');
+    preview.className = 'text-muted';
+    preview.style.fontSize = '0.84rem';
+    preview.style.marginTop = '2px';
+    form.appendChild(preview);
+
+    function refreshPreview() {
+      const incoming = Math.max(0, parseInt(amountInput.value, 10) || 0);
+      const armor = armorChk.checked ? Math.max(0, parseInt(armorValueInput.value, 10) || 0) : 0;
+      const applied = Math.max(0, incoming - armor);
+      preview.textContent = `Applied stress: ${applied} (incoming ${incoming}${armorChk.checked ? ` - armor ${armor}` : ''})`;
+    }
+    [amountInput, armorValueInput, armorChk].forEach((el) => {
+      el.addEventListener('input', refreshPreview);
+      el.addEventListener('change', refreshPreview);
+    });
+    refreshPreview();
+
+    const btnRow = document.createElement('div');
+    btnRow.style.display = 'flex';
+    btnRow.style.gap = '8px';
+    btnRow.style.marginTop = '10px';
+    const applyBtn = document.createElement('button');
+    applyBtn.className = 'modal-submit';
+    applyBtn.textContent = 'Apply';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    btnRow.appendChild(applyBtn);
+    btnRow.appendChild(cancelBtn);
+    form.appendChild(btnRow);
+
+    applyBtn.addEventListener('click', () => {
+      const track = trackSel.value;
+      const incoming = Math.max(0, parseInt(amountInput.value, 10) || 0);
+      const armor = armorChk.checked ? Math.max(0, parseInt(armorValueInput.value, 10) || 0) : 0;
+      const applied = Math.max(0, incoming - armor);
+      const current = (pc.stressFilled && pc.stressFilled[track]) ? pc.stressFilled[track].length : 0;
+      setPCStressLevel(pc, track, current + applied);
+      appendLog(`Applied ${applied} ${track} stress from ${sourceSel.value}${armorChk.checked ? ` (armor ${armor})` : ''}`, pc.id);
+      closeModal();
+      saveAndRefresh();
+    });
+    cancelBtn.addEventListener('click', () => closeModal());
+
+    content.appendChild(form);
+    overlay.classList.remove('hidden');
+    modal.classList.remove('hidden');
+  }
+
+  function openFalloutLookupModal(track = 'Blood', severity = 'Minor') {
+    const overlay = document.getElementById('modal-overlay');
+    const modal = document.getElementById('modal');
+    const content = document.getElementById('modal-content');
+    const titleEl = document.getElementById('modal-title');
+    if (titleEl) titleEl.textContent = `Fallout Lookup: ${track} (${severity})`;
+    content.innerHTML = '';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'fallout-lookup-wrap';
+    const intro = document.createElement('p');
+    intro.className = 'text-muted';
+    intro.textContent = 'Use these as fast in-session prompts. Rename/edit to fit fiction.';
+    wrap.appendChild(intro);
+
+    const camp = currentCampaign();
+    const guidance = (camp && camp.falloutGuidance) ? camp.falloutGuidance : defaultFalloutGuidance();
+    const table = guidance[track] || guidance.Blood || defaultFalloutGuidance().Blood;
+    ['Minor', 'Moderate', 'Severe'].forEach((level) => {
+      const block = document.createElement('div');
+      block.className = 'fallout-lookup-block' + (level === severity ? ' active' : '');
+      const header = document.createElement('strong');
+      header.textContent = level;
+      block.appendChild(header);
+      const ul = document.createElement('ul');
+      ul.className = 'fallout-lookup-list';
+      (table[level] || []).forEach((item) => {
+        const li = document.createElement('li');
+        li.textContent = item;
+        ul.appendChild(li);
+      });
+      block.appendChild(ul);
+      wrap.appendChild(block);
+    });
+
+    content.appendChild(wrap);
+    overlay.classList.remove('hidden');
+    modal.classList.remove('hidden');
+  }
+
   /**
    * Helper to create a fallout row for PCs and NPCs. Allows editing of
    * type, severity, name and description inline. Remove button deletes
@@ -2787,14 +3732,42 @@
       saveAndRefresh();
     });
     row.appendChild(descInput);
+    // Quick fallout lookup
+    const lookupBtn = document.createElement('button');
+    lookupBtn.textContent = 'Lookup';
+    lookupBtn.className = 'fallout-lookup-btn';
+    lookupBtn.title = 'Open fallout guidance table';
+    lookupBtn.addEventListener('click', () => {
+      openFalloutLookupModal(f.type || 'Blood', f.severity || 'Minor');
+    });
+    row.appendChild(lookupBtn);
     // Resolved toggle
     const resolveBtn = document.createElement('button');
     resolveBtn.className = 'fallout-resolve-btn' + (f.resolved ? ' resolved' : '');
     resolveBtn.textContent = f.resolved ? '✓ Resolved' : 'Resolve';
     resolveBtn.title = f.resolved ? 'Mark as active again' : 'Mark as resolved';
-    resolveBtn.addEventListener('click', () => {
+    resolveBtn.addEventListener('click', async () => {
       f.resolved = !f.resolved;
       appendLog(f.resolved ? 'Resolved fallout' : 'Reopened fallout', ent.id);
+      if (f.resolved && ent.type === 'pc') {
+        const track = String(f.type || '').toLowerCase();
+        const stressTracks = ['blood', 'mind', 'silver', 'shadow', 'reputation'];
+        if (stressTracks.includes(track) && ent.stressFilled && Array.isArray(ent.stressFilled[track])) {
+          const clearAmount = stressClearAmountForSeverity(f.severity || 'Minor');
+          const current = ent.stressFilled[track].length;
+          if (current > 0) {
+            const suggested = Math.max(0, current - clearAmount);
+            const ok = await askConfirm(
+              `Clear ${clearAmount} ${track} stress for resolved ${f.severity || 'Minor'} fallout? (${current} → ${suggested})`,
+              'Resolve Fallout'
+            );
+            if (ok) {
+              setPCStressLevel(ent, track, suggested, { triggerFallout: false });
+              appendLog('Cleared stress from resolved fallout', ent.id);
+            }
+          }
+        }
+      }
       saveAndRefresh();
     });
     row.appendChild(resolveBtn);
@@ -2867,7 +3840,7 @@
       rollBtn.title = 'Roll ' + (obj.name || 'skill');
       rollBtn.innerHTML = '⚄';
       rollBtn.addEventListener('click', () => {
-        openDiceRollerForSkill(obj.name, obj.mastered);
+        openDiceRollerForSkill(obj.name, obj.mastered, ent.type === 'pc' ? ent : null);
       });
       row.appendChild(nameSelect);
       row.appendChild(masteredBtn);
@@ -2947,6 +3920,7 @@
     });
     typeSelect.style.flex = '1';
     typeSelect.addEventListener('change', e => {
+      pushSectionUndo(pc, 'inventory', 'Change inventory type');
       item.type = e.target.value;
       // Reset type-specific fields
       if (item.type === 'weapon') {
@@ -2971,10 +3945,15 @@
     itemInput.placeholder = 'Item';
     itemInput.value = item.item || '';
     itemInput.style.flex = '2';
+    itemInput.addEventListener('input', e => {
+      item.item = e.target.value;
+      queueDeferredSave(`inv-item:${pc.id}:${item.id}`);
+    });
     itemInput.addEventListener('change', e => {
+      pushSectionUndo(pc, 'inventory', 'Edit inventory item');
       item.item = e.target.value;
       appendLog('Edited inventory', pc.id);
-      saveAndRefresh();
+      saveWithoutRefresh();
     });
 
     // Quantity input
@@ -2984,9 +3963,10 @@
     qtyInput.min = '1';
     qtyInput.style.width = '60px';
     qtyInput.addEventListener('change', e => {
+      pushSectionUndo(pc, 'inventory', 'Edit inventory quantity');
       item.quantity = parseInt(e.target.value) || 1;
       appendLog('Edited inventory', pc.id);
-      saveAndRefresh();
+      saveWithoutRefresh();
     });
 
     // Notes input
@@ -2995,10 +3975,15 @@
     notesInput.placeholder = 'Notes';
     notesInput.value = item.notes || '';
     notesInput.style.flex = '3';
+    notesInput.addEventListener('input', e => {
+      item.notes = e.target.value;
+      queueDeferredSave(`inv-notes:${pc.id}:${item.id}`);
+    });
     notesInput.addEventListener('change', e => {
+      pushSectionUndo(pc, 'inventory', 'Edit inventory notes');
       item.notes = e.target.value;
       appendLog('Edited inventory', pc.id);
-      saveAndRefresh();
+      saveWithoutRefresh();
     });
 
     // Container for type-specific fields (stress/resistance and tags)
@@ -3024,6 +4009,7 @@
           stressSelect.appendChild(opt);
         });
         stressSelect.addEventListener('change', e => {
+          pushSectionUndo(pc, 'inventory', 'Edit weapon stress');
           item.stress = e.target.value;
           appendLog('Edited weapon stress', pc.id);
           saveAndRefresh();
@@ -3047,6 +4033,7 @@
           pill.textContent = tag;
           pill.className = 'tag-toggle-pill' + (item.tags.includes(tag) ? ' active' : '');
           pill.addEventListener('click', () => {
+            pushSectionUndo(pc, 'inventory', 'Edit weapon tags');
             if (item.tags.includes(tag)) {
               item.tags.splice(item.tags.indexOf(tag), 1);
             } else {
@@ -3077,6 +4064,7 @@
         resInput.value = item.resistance || 0;
         resInput.style.width = '60px';
         resInput.addEventListener('change', e => {
+          pushSectionUndo(pc, 'inventory', 'Edit armor resistance');
           item.resistance = parseInt(e.target.value) || 0;
           appendLog('Edited armor resistance', pc.id);
           saveAndRefresh();
@@ -3100,6 +4088,7 @@
           pill.textContent = tag;
           pill.className = 'tag-toggle-pill' + (item.tags.includes(tag) ? ' active' : '');
           pill.addEventListener('click', () => {
+            pushSectionUndo(pc, 'inventory', 'Edit armor tags');
             if (item.tags.includes(tag)) {
               item.tags.splice(item.tags.indexOf(tag), 1);
             } else {
@@ -3127,6 +4116,7 @@
         tagInput.value = Array.isArray(item.tags) ? item.tags.join(', ') : '';
         tagInput.style.flex = '2';
         tagInput.addEventListener('change', e => {
+          pushSectionUndo(pc, 'inventory', 'Edit item tags');
           const val = e.target.value.trim();
           item.tags = val ? val.split(',').map(s => s.trim()).filter(Boolean) : [];
           appendLog('Edited item tags', pc.id);
@@ -3143,6 +4133,7 @@
     remBtn.textContent = '×';
     remBtn.className = 'row-remove-btn';
     remBtn.addEventListener('click', () => {
+      pushSectionUndo(pc, 'inventory', 'Remove inventory item');
       pc.inventory = pc.inventory.filter(x => x.id !== item.id);
       appendLog('Removed inventory', pc.id);
       saveAndRefresh();
@@ -3178,10 +4169,15 @@
     titleInput.placeholder = 'Title';
     titleInput.value = task.title || '';
     titleInput.style.flex = '2';
+    titleInput.addEventListener('input', e => {
+      task.title = e.target.value;
+      queueDeferredSave(`task-title:${pc.id}:${task.id}`);
+    });
     titleInput.addEventListener('change', e => {
+      pushSectionUndo(pc, 'tasks', 'Edit task title');
       task.title = e.target.value;
       appendLog('Edited task', pc.id);
-      saveAndRefresh();
+      saveWithoutRefresh();
     });
     const statusSelect = document.createElement('select');
     ['To Do','Doing','Done'].forEach(st => {
@@ -3192,9 +4188,10 @@
       statusSelect.appendChild(opt);
     });
     statusSelect.addEventListener('change', e => {
+      pushSectionUndo(pc, 'tasks', 'Edit task status');
       task.status = e.target.value;
       appendLog('Edited task', pc.id);
-      saveAndRefresh();
+      saveWithoutRefresh();
     });
     const prioritySelect = document.createElement('select');
     ['Low','Normal','High','Urgent'].forEach(pr => {
@@ -3205,32 +4202,40 @@
       prioritySelect.appendChild(opt);
     });
     prioritySelect.addEventListener('change', e => {
+      pushSectionUndo(pc, 'tasks', 'Edit task priority');
       task.priority = e.target.value;
       appendLog('Edited task', pc.id);
-      saveAndRefresh();
+      saveWithoutRefresh();
     });
     const dueInput = document.createElement('input');
     dueInput.type = 'date';
     dueInput.value = task.dueDate || '';
     dueInput.addEventListener('change', e => {
+      pushSectionUndo(pc, 'tasks', 'Edit task due date');
       task.dueDate = e.target.value;
       appendLog('Edited task', pc.id);
-      saveAndRefresh();
+      saveWithoutRefresh();
     });
     const notesInput = document.createElement('input');
     notesInput.type = 'text';
     notesInput.placeholder = 'Notes';
     notesInput.value = task.notes || '';
     notesInput.style.flex = '3';
+    notesInput.addEventListener('input', e => {
+      task.notes = e.target.value;
+      queueDeferredSave(`task-notes:${pc.id}:${task.id}`);
+    });
     notesInput.addEventListener('change', e => {
+      pushSectionUndo(pc, 'tasks', 'Edit task notes');
       task.notes = e.target.value;
       appendLog('Edited task', pc.id);
-      saveAndRefresh();
+      saveWithoutRefresh();
     });
     const remBtn = document.createElement('button');
     remBtn.textContent = '×';
     remBtn.className = 'row-remove-btn';
     remBtn.addEventListener('click', () => {
+      pushSectionUndo(pc, 'tasks', 'Remove task');
       pc.tasks = pc.tasks.filter(x => x.id !== task.id);
       appendLog('Removed task', pc.id);
       saveAndRefresh();
@@ -3269,6 +4274,141 @@
     toast._timer = setTimeout(() => {
       toast.classList.remove('spire-toast-show');
     }, 3500);
+  }
+
+  function setSaveState(mode = 'saved', message = '') {
+    const el = document.getElementById('save-state-indicator');
+    if (!el) return;
+    if (saveStateTimer) {
+      clearTimeout(saveStateTimer);
+      saveStateTimer = null;
+    }
+    el.classList.remove('state-saving', 'state-saved', 'state-error');
+    if (mode === 'saving') {
+      el.classList.add('state-saving');
+      el.textContent = message || 'Saving...';
+      return;
+    }
+    if (mode === 'error') {
+      el.classList.add('state-error');
+      el.textContent = message || 'Save failed';
+      return;
+    }
+    el.classList.add('state-saved');
+    el.textContent = message || 'Saved';
+    saveStateTimer = setTimeout(() => {
+      el.classList.remove('state-saved');
+      el.textContent = 'Saved';
+    }, 1500);
+  }
+
+  function setSyncConflictWarning(show, message = 'Updated in another tab') {
+    const el = document.getElementById('sync-conflict-indicator');
+    const reloadBtn = document.getElementById('sync-reload-btn');
+    state.syncConflictActive = !!show;
+    if (!show) state.localEditsSinceConflict = 0;
+    if (el) {
+      el.textContent = message;
+      el.classList.toggle('hidden', !show);
+    }
+    if (reloadBtn) reloadBtn.classList.toggle('hidden', !show);
+  }
+
+  async function attemptManualSave() {
+    if (!state.syncConflictActive) {
+      const saved = saveCampaigns();
+      if (saved) showToast('Campaign saved', 'info');
+      return;
+    }
+    const ok = await askConfirm(
+      'This campaign changed in another tab. Save anyway and overwrite localStorage?',
+      'Sync Conflict'
+    );
+    if (!ok) return;
+    const saved = saveCampaigns({ force: true });
+    if (saved) showToast('Campaign saved (forced overwrite).', 'warn');
+  }
+
+  function reloadCampaignFromStorage() {
+    if (!state.currentUser) return;
+    try {
+      const raw = localStorage.getItem(userScopedKey('spire-campaigns'));
+      if (!raw) {
+        showToast('No stored campaign data to reload.', 'warn');
+        return;
+      }
+      const parsed = JSON.parse(raw);
+      state.campaigns = parsed.campaigns || {};
+      state.currentCampaignId = parsed.currentCampaignId;
+      if (!state.currentCampaignId || !state.campaigns[state.currentCampaignId]) {
+        const first = Object.keys(state.campaigns)[0];
+        state.currentCampaignId = first || null;
+      }
+      if (!state.currentCampaignId) {
+        const camp = createCampaign('Default');
+        state.campaigns[camp.id] = camp;
+        state.currentCampaignId = camp.id;
+      }
+      state.lastSeenRevision = localStorage.getItem(userScopedKey('spire-campaigns-rev')) || state.lastSeenRevision;
+      initAfterLoad();
+      setSyncConflictWarning(false);
+      showToast('Reloaded latest campaign data from storage.', 'info');
+    } catch (e) {
+      console.warn('Failed to reload from storage', e);
+      showToast('Could not reload latest data.', 'warn');
+    }
+  }
+
+  function openSyncConflictModal() {
+    if (!state.syncConflictActive) return;
+    const overlay = document.getElementById('modal-overlay');
+    const modal = document.getElementById('modal');
+    const content = document.getElementById('modal-content');
+    const titleEl = document.getElementById('modal-title');
+    if (titleEl) titleEl.textContent = 'Sync Conflict';
+    content.innerHTML = '';
+
+    const msg = document.createElement('p');
+    msg.style.marginBottom = '12px';
+    msg.textContent = `${conflictWarningText()}. Choose how to resolve:`;
+    content.appendChild(msg);
+
+    const actions = document.createElement('div');
+    actions.className = 'modal-form';
+    actions.style.display = 'flex';
+    actions.style.flexDirection = 'column';
+    actions.style.gap = '8px';
+
+    const reloadBtn = document.createElement('button');
+    reloadBtn.className = 'modal-submit';
+    reloadBtn.textContent = 'Reload Latest From Other Tab';
+    reloadBtn.addEventListener('click', () => {
+      closeModal();
+      reloadCampaignFromStorage();
+    });
+    actions.appendChild(reloadBtn);
+
+    const keepBtn = document.createElement('button');
+    keepBtn.className = 'modal-submit';
+    keepBtn.style.background = 'var(--spire-mid)';
+    keepBtn.textContent = 'Keep Mine (Force Save)';
+    keepBtn.addEventListener('click', () => {
+      closeModal();
+      const saved = saveCampaigns({ force: true });
+      if (saved) showToast('Campaign saved (forced overwrite).', 'warn');
+    });
+    actions.appendChild(keepBtn);
+
+    const dismissBtn = document.createElement('button');
+    dismissBtn.className = 'modal-submit';
+    dismissBtn.style.background = 'transparent';
+    dismissBtn.textContent = 'Dismiss';
+    dismissBtn.addEventListener('click', () => closeModal());
+    actions.appendChild(dismissBtn);
+
+    content.appendChild(actions);
+    overlay.classList.remove('hidden');
+    modal.classList.remove('hidden');
   }
 
   let modalDecisionResolver = null;
@@ -3569,14 +4709,115 @@
   }
 
   function saveAndRefresh() {
+    const sheetBefore = document.getElementById('sheet-container');
+    const preservedSheetScroll = sheetBefore && sheetBefore.style.display !== 'none' ? sheetBefore.scrollTop : null;
     saveCampaigns();
     renderEntityLists();
     renderSheetView();
+    if (preservedSheetScroll !== null) {
+      const sheetAfter = document.getElementById('sheet-container');
+      if (sheetAfter) sheetAfter.scrollTop = preservedSheetScroll;
+    }
     updateGraph();
     renderMessages();
     updatePendingBadge();
     updatePlayerPCButtonState();
     updateFocusToggleUI();
+    updateMessagesUnreadBadge();
+    updateUndoButtonState();
+    ensureAutoGrowTextareas(document);
+    ensureAccessibilityLabels(document);
+  }
+
+  function saveWithoutRefresh() {
+    saveCampaigns();
+    updatePendingBadge();
+    updatePlayerPCButtonState();
+    updateFocusToggleUI();
+    updateMessagesUnreadBadge();
+    updateUndoButtonState();
+    ensureAutoGrowTextareas(document);
+    ensureAccessibilityLabels(document);
+    flashSavedSection();
+  }
+
+  function queueDeferredSave(key, delayMs = 280) {
+    if (!key) {
+      saveWithoutRefresh();
+      return;
+    }
+    if (deferredSaveTimers.has(key)) clearTimeout(deferredSaveTimers.get(key));
+    const timer = setTimeout(() => {
+      deferredSaveTimers.delete(key);
+      saveWithoutRefresh();
+    }, delayMs);
+    deferredSaveTimers.set(key, timer);
+  }
+
+  function flashSavedSection(sourceEl = null) {
+    const active = sourceEl || document.activeElement;
+    if (!active || !active.closest) return;
+    const section = active.closest('.inspector-section');
+    if (!section) return;
+    const stampHost = section.querySelector('h3') || section.querySelector('.section-header');
+    if (stampHost) {
+      let stamp = stampHost.querySelector('.section-saved-stamp');
+      if (!stamp) {
+        stamp = document.createElement('span');
+        stamp.className = 'section-saved-stamp';
+        stampHost.appendChild(stamp);
+      }
+      stamp.textContent = 'Saved ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    section.classList.remove('saved-pulse');
+    // Trigger reflow so repeated pulses still animate.
+    void section.offsetWidth;
+    section.classList.add('saved-pulse');
+    setTimeout(() => section.classList.remove('saved-pulse'), 520);
+  }
+
+  function ensureAutoGrowTextareas(root = document) {
+    if (!root || !root.querySelectorAll) return;
+    root.querySelectorAll('textarea').forEach((ta) => {
+      if (ta.dataset.autogrowBound === '1') return;
+      ta.dataset.autogrowBound = '1';
+      ta.classList.add('auto-grow');
+      const resize = () => {
+        ta.style.height = 'auto';
+        ta.style.height = `${Math.max(ta.scrollHeight, 64)}px`;
+      };
+      ta.addEventListener('input', resize);
+      requestAnimationFrame(resize);
+    });
+  }
+
+  function ensureAccessibilityLabels(root = document) {
+    if (!root || !root.querySelectorAll) return;
+    const controls = root.querySelectorAll('button, input, select, textarea');
+    controls.forEach((el) => {
+      if (el.hasAttribute('aria-label')) return;
+      if (el.id) {
+        const direct = root.querySelector(`label[for="${el.id}"]`) || document.querySelector(`label[for="${el.id}"]`);
+        if (direct && direct.textContent && direct.textContent.trim()) {
+          el.setAttribute('aria-label', direct.textContent.trim());
+          return;
+        }
+      }
+      const title = (el.getAttribute('title') || '').trim();
+      if (title) {
+        el.setAttribute('aria-label', title);
+        return;
+      }
+      const placeholder = (el.getAttribute('placeholder') || '').trim();
+      if (placeholder) {
+        el.setAttribute('aria-label', placeholder);
+        return;
+      }
+      if (el.tagName === 'BUTTON') {
+        const text = (el.textContent || '').trim();
+        if (text) el.setAttribute('aria-label', text);
+      }
+    });
   }
 
   function ensureGraphViews(camp = currentCampaign()) {
@@ -3900,6 +5141,23 @@
     // Refresh node select dropdown
     populateNodeSelect();
     populateGraphViewSelect();
+    const emptyEl = document.getElementById('graph-empty');
+    if (emptyEl) {
+      const isEmpty = graphNodes.length === 0;
+      emptyEl.classList.toggle('hidden', !isEmpty);
+      if (isEmpty) {
+        emptyEl.innerHTML = '';
+        const icon = document.createElement('span');
+        icon.className = 'material-icons';
+        icon.textContent = 'hub';
+        const text = document.createElement('p');
+        text.textContent = state.gmMode
+          ? 'No entities match current web filters. Add entities or relax filters above.'
+          : 'No visible entities in the web yet.';
+        emptyEl.appendChild(icon);
+        emptyEl.appendChild(text);
+      }
+    }
   }
 
   /* -----------------------------------------------------------------------
@@ -4603,6 +5861,7 @@
       typeSelect.appendChild(opt);
     });
     typeSelect.addEventListener('change', e => {
+      pushRelationshipUndo(rel.id, 'Relationship type');
       rel.type = e.target.value;
       appendLog('Edited relationship type', rel.id);
       saveAndRefresh();
@@ -4619,6 +5878,7 @@
     dirChk.type = 'checkbox';
     dirChk.checked = rel.directed;
     dirChk.addEventListener('change', e => {
+      pushRelationshipUndo(rel.id, 'Relationship direction');
       rel.directed = e.target.checked;
       appendLog('Edited relationship direction', rel.id);
       saveAndRefresh();
@@ -4634,6 +5894,7 @@
     srcChk.type = 'checkbox';
     srcChk.checked = rel.sourceKnows;
     srcChk.addEventListener('change', e => {
+      pushRelationshipUndo(rel.id, 'Relationship awareness');
       rel.sourceKnows = e.target.checked;
       appendLog('Edited awareness', rel.id);
       saveAndRefresh();
@@ -4644,6 +5905,7 @@
     trgChk.type = 'checkbox';
     trgChk.checked = rel.targetKnows;
     trgChk.addEventListener('change', e => {
+      pushRelationshipUndo(rel.id, 'Relationship awareness');
       rel.targetKnows = e.target.checked;
       appendLog('Edited awareness', rel.id);
       saveAndRefresh();
@@ -4664,6 +5926,7 @@
     secretChk.type = 'checkbox';
     secretChk.checked = rel.secret;
     secretChk.addEventListener('change', e => {
+      pushRelationshipUndo(rel.id, 'Relationship secrecy');
       rel.secret = e.target.checked;
       appendLog('Edited secrecy', rel.id);
       saveAndRefresh();
@@ -4686,6 +5949,7 @@
       falloutSelect.appendChild(opt);
     });
     falloutSelect.addEventListener('change', e => {
+      pushRelationshipUndo(rel.id, 'Bond fallout');
       rel.falloutLevel = e.target.value;
       appendLog('Edited bond fallout', rel.id);
       saveAndRefresh();
@@ -4700,10 +5964,15 @@
     notesLabel.textContent = 'Notes';
     const notesInput = document.createElement('textarea');
     notesInput.value = rel.notes || '';
+    notesInput.addEventListener('input', e => {
+      rel.notes = e.target.value;
+      queueDeferredSave(`rel-notes:${rel.id}`);
+    });
     notesInput.addEventListener('change', e => {
+      pushRelationshipUndo(rel.id, 'Relationship notes');
       rel.notes = e.target.value;
       appendLog('Edited relationship notes', rel.id);
-      saveAndRefresh();
+      saveWithoutRefresh();
     });
     notesField.appendChild(notesLabel);
     notesField.appendChild(notesInput);
@@ -4711,6 +5980,21 @@
     // Actions: delete relationship
     const actions = document.createElement('div');
     actions.className = 'inspector-actions';
+    const undoBtn = document.createElement('button');
+    undoBtn.textContent = 'Undo Relationship Edit';
+    const relUndoStack = (currentCampaign().relationshipUndo && currentCampaign().relationshipUndo[rel.id]) || [];
+    undoBtn.disabled = !(Array.isArray(relUndoStack) && relUndoStack.length);
+    if (Array.isArray(relUndoStack) && relUndoStack.length) {
+      const last = relUndoStack[relUndoStack.length - 1];
+      const when = last.time ? new Date(last.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+      undoBtn.title = `Undo: ${last.label || 'last relationship edit'}${when ? ` (${when})` : ''}`;
+    } else {
+      undoBtn.title = 'No relationship edits to undo.';
+    }
+    undoBtn.addEventListener('click', () => {
+      undoRelationshipEdit(rel.id);
+    });
+    actions.appendChild(undoBtn);
     const deleteBtn = document.createElement('button');
     deleteBtn.textContent = 'Delete Relationship';
     deleteBtn.addEventListener('click', async () => {
@@ -4724,6 +6008,31 @@
    * Render the activity log. In player mode, hide log entries that
    * reference GM-only entities or secret relationships.
    */
+  function buildOpenTasksPrepSection(pcs) {
+    const tasksDiv = document.createElement('div');
+    tasksDiv.className = 'prep-section';
+    tasksDiv.innerHTML = '<strong>Open Tasks</strong>';
+    let anyTasks = false;
+    pcs.forEach(pc => {
+      (pc.tasks || []).filter(t => t.status !== 'Done').forEach(t => {
+        anyTasks = true;
+        const tRow = document.createElement('div');
+        tRow.className = 'prep-task-row';
+        const nameBtn = document.createElement('button');
+        nameBtn.className = 'prep-entity-link';
+        nameBtn.textContent = entityLabel(pc) + ':';
+        nameBtn.addEventListener('click', () => { selectEntity(pc.id); document.querySelector('.tab-link[data-tab="sheets-view"]').click(); });
+        tRow.appendChild(nameBtn);
+        const tdesc = document.createElement('span');
+        tdesc.textContent = ' ' + (t.title || '(unnamed)') + ' [' + t.status + ']';
+        tRow.appendChild(tdesc);
+        tasksDiv.appendChild(tRow);
+      });
+    });
+    if (!anyTasks) tasksDiv.innerHTML += '<p style="color:var(--spire-dim);font-size:0.82rem">No open tasks.</p>';
+    return tasksDiv;
+  }
+
   function renderSessionPrep() {
     const camp = currentCampaign();
     const prepEl = document.getElementById('session-prep-panel');
@@ -4731,11 +6040,29 @@
     if (!state.gmMode) { prepEl.style.display = 'none'; return; }
     prepEl.style.display = 'block';
     prepEl.innerHTML = '';
+    if (!Array.isArray(camp.clocks)) camp.clocks = [];
 
     const h = document.createElement('div');
     h.className = 'session-prep-header';
     h.textContent = 'Session Prep';
     prepEl.appendChild(h);
+    const tasksOnlyWrap = document.createElement('label');
+    tasksOnlyWrap.className = 'sidebar-pin-only-row';
+    tasksOnlyWrap.style.marginBottom = '6px';
+    const tasksOnlyChk = document.createElement('input');
+    tasksOnlyChk.type = 'checkbox';
+    tasksOnlyChk.checked = !!camp.sessionPrepTasksOnly;
+    tasksOnlyChk.addEventListener('change', () => {
+      camp.sessionPrepTasksOnly = !!tasksOnlyChk.checked;
+      saveCampaigns();
+      renderSessionPrep();
+    });
+    const tasksOnlyTxt = document.createElement('span');
+    tasksOnlyTxt.textContent = 'Open tasks only view';
+    tasksOnlyWrap.appendChild(tasksOnlyChk);
+    tasksOnlyWrap.appendChild(tasksOnlyTxt);
+    prepEl.appendChild(tasksOnlyWrap);
+    const tasksOnlyMode = !!camp.sessionPrepTasksOnly;
 
     // Ministry Attention tracker
     const minRow = document.createElement('div');
@@ -4765,11 +6092,35 @@
     prepEl.appendChild(minRow);
     prepEl.appendChild(minBar);
 
+    // Session control summary
+    const summary = document.createElement('div');
+    summary.className = 'prep-section';
+    const pcs = Object.values(camp.entities).filter(e => e.type === 'pc');
+    const pendingFalloutCount = pcs.reduce((sum, pc) => sum + (pc.fallout || []).filter(f => !f.resolved).length, 0);
+    const highStressPcCount = pcs.filter(pc => {
+      const tracks = ['blood','mind','silver','shadow','reputation'];
+      return tracks.some((t) => {
+        const filled = (pc.stressFilled && pc.stressFilled[t]) ? pc.stressFilled[t].length : 0;
+        const slots = (pc.stressSlots && pc.stressSlots[t]) ? pc.stressSlots[t] : 10;
+        return filled >= Math.max(1, slots - 2);
+      });
+    }).length;
+    const openTasksCount = pcs.reduce((sum, pc) => sum + (pc.tasks || []).filter(t => t.status !== 'Done').length, 0);
+    const activeClockCount = camp.clocks.filter(c => (c.current || 0) < (c.size || 4)).length;
+    summary.innerHTML = `<strong>Control Summary</strong>
+      <div class="text-muted" style="font-size:0.84rem;margin-top:4px">
+        Pending fallout: ${pendingFalloutCount} | High-stress PCs: ${highStressPcCount} | Open tasks: ${openTasksCount} | Active clocks: ${activeClockCount}
+      </div>`;
+    prepEl.appendChild(summary);
+    if (tasksOnlyMode) {
+      prepEl.appendChild(buildOpenTasksPrepSection(pcs));
+      return;
+    }
+
     // Party stress overview
     const stressDiv = document.createElement('div');
     stressDiv.className = 'prep-section';
     stressDiv.innerHTML = '<strong>Party Stress</strong>';
-    const pcs = Object.values(camp.entities).filter(e => e.type === 'pc');
     if (pcs.length === 0) {
       stressDiv.innerHTML += '<p style="color:var(--spire-dim);font-size:0.82rem">No PCs yet.</p>';
     } else {
@@ -4797,6 +6148,40 @@
     }
     prepEl.appendChild(stressDiv);
 
+    // High-risk PCs snapshot
+    const riskDiv = document.createElement('div');
+    riskDiv.className = 'prep-section';
+    riskDiv.innerHTML = '<strong>High Risk PCs</strong>';
+    let anyRisk = false;
+    pcs.forEach((pc) => {
+      const total = totalStressForFallout(pc);
+      const tracks = ['blood','mind','silver','shadow','reputation'];
+      const maxTrack = tracks.reduce((m, t) => {
+        const v = (pc.stressFilled && pc.stressFilled[t]) ? pc.stressFilled[t].length : 0;
+        return Math.max(m, v);
+      }, 0);
+      const activeFalloutCount = (pc.fallout || []).filter(f => !f.resolved).length;
+      const risky = total >= 9 || maxTrack >= 8 || activeFalloutCount >= 2;
+      if (!risky) return;
+      anyRisk = true;
+      const row = document.createElement('div');
+      row.className = 'prep-task-row';
+      const nameBtn = document.createElement('button');
+      nameBtn.className = 'prep-entity-link';
+      nameBtn.textContent = entityLabel(pc);
+      nameBtn.addEventListener('click', () => {
+        selectEntity(pc.id);
+        document.querySelector('.tab-link[data-tab="sheets-view"]').click();
+      });
+      const info = document.createElement('span');
+      info.textContent = ` — Total stress ${total}, peak track ${maxTrack}, active fallout ${activeFalloutCount}`;
+      row.appendChild(nameBtn);
+      row.appendChild(info);
+      riskDiv.appendChild(row);
+    });
+    if (!anyRisk) riskDiv.innerHTML += '<p style="color:var(--spire-dim);font-size:0.82rem">No high-risk PCs right now.</p>';
+    prepEl.appendChild(riskDiv);
+
     // Active fallout overview
     const falloutDiv = document.createElement('div');
     falloutDiv.className = 'prep-section';
@@ -4822,29 +6207,88 @@
     if (!anyFallout) falloutDiv.innerHTML += '<p style="color:var(--spire-dim);font-size:0.82rem">No active fallout.</p>';
     prepEl.appendChild(falloutDiv);
 
-    // Open tasks
-    const tasksDiv = document.createElement('div');
-    tasksDiv.className = 'prep-section';
-    tasksDiv.innerHTML = '<strong>Open Tasks</strong>';
-    let anyTasks = false;
-    pcs.forEach(pc => {
-      (pc.tasks || []).filter(t => t.status !== 'Done').forEach(t => {
-        anyTasks = true;
-        const tRow = document.createElement('div');
-        tRow.className = 'prep-task-row';
-        const nameBtn = document.createElement('button');
-        nameBtn.className = 'prep-entity-link';
-        nameBtn.textContent = entityLabel(pc) + ':';
-        nameBtn.addEventListener('click', () => { selectEntity(pc.id); document.querySelector('.tab-link[data-tab="sheets-view"]').click(); });
-        tRow.appendChild(nameBtn);
-        const tdesc = document.createElement('span');
-        tdesc.textContent = ' ' + (t.title || '(unnamed)') + ' [' + t.status + ']';
-        tRow.appendChild(tdesc);
-        tasksDiv.appendChild(tRow);
-      });
+    prepEl.appendChild(buildOpenTasksPrepSection(pcs));
+
+    // Active clocks
+    const clocksDiv = document.createElement('div');
+    clocksDiv.className = 'prep-section';
+    clocksDiv.innerHTML = '<strong>Active Clocks</strong>';
+    const addClockBtn = document.createElement('button');
+    addClockBtn.className = 'toolbar-btn';
+    addClockBtn.textContent = '+ Add Clock';
+    addClockBtn.style.marginTop = '6px';
+    addClockBtn.addEventListener('click', async () => {
+      const name = await askPrompt('Clock name:', '', { title: 'Add Clock', submitText: 'Add' });
+      if (!name || !name.trim()) return;
+      const sizeRaw = await askPrompt('Clock size (4, 6, 8, 10):', '6', { title: 'Clock Size', submitText: 'Create' });
+      const parsed = parseInt(sizeRaw, 10);
+      const size = [4, 6, 8, 10].includes(parsed) ? parsed : 6;
+      camp.clocks.push({ id: generateId('clock'), name: name.trim(), current: 0, size });
+      appendLog('Added clock', '');
+      saveCampaigns();
+      renderSessionPrep();
     });
-    if (!anyTasks) tasksDiv.innerHTML += '<p style="color:var(--spire-dim);font-size:0.82rem">No open tasks.</p>';
-    prepEl.appendChild(tasksDiv);
+    clocksDiv.appendChild(addClockBtn);
+
+    if (!camp.clocks.length) {
+      const p = document.createElement('p');
+      p.style.color = 'var(--spire-dim)';
+      p.style.fontSize = '0.82rem';
+      p.textContent = 'No active clocks.';
+      clocksDiv.appendChild(p);
+    } else {
+      camp.clocks.forEach((clock) => {
+        const row = document.createElement('div');
+        row.className = 'prep-task-row';
+        row.style.marginTop = '6px';
+        const label = document.createElement('span');
+        const size = clock.size || 4;
+        const progress = Math.min(size, Math.max(0, clock.current || 0));
+        label.textContent = `${clock.name || '(unnamed)'} — ${progress}/${size}`;
+        row.appendChild(label);
+
+        const minus = document.createElement('button');
+        minus.className = 'ministry-btn';
+        minus.textContent = '−';
+        minus.title = 'Decrease clock';
+        minus.addEventListener('click', () => {
+          clock.current = Math.max(0, (clock.current || 0) - 1);
+          appendLog('Adjusted clock', '');
+          saveCampaigns();
+          renderSessionPrep();
+        });
+
+        const plus = document.createElement('button');
+        plus.className = 'ministry-btn';
+        plus.textContent = '+';
+        plus.title = 'Increase clock';
+        plus.addEventListener('click', () => {
+          clock.current = Math.min(size, (clock.current || 0) + 1);
+          appendLog('Adjusted clock', '');
+          saveCampaigns();
+          renderSessionPrep();
+        });
+
+        const del = document.createElement('button');
+        del.className = 'ministry-btn';
+        del.textContent = '×';
+        del.title = 'Delete clock';
+        del.addEventListener('click', async () => {
+          const ok = await askConfirm(`Delete clock "${clock.name || '(unnamed)'}"?`, 'Delete Clock');
+          if (!ok) return;
+          camp.clocks = camp.clocks.filter(c => c.id !== clock.id);
+          appendLog('Deleted clock', '');
+          saveCampaigns();
+          renderSessionPrep();
+        });
+
+        row.appendChild(minus);
+        row.appendChild(plus);
+        row.appendChild(del);
+        clocksDiv.appendChild(row);
+      });
+    }
+    prepEl.appendChild(clocksDiv);
   }
 
   function syncLogFilterControls(camp) {
@@ -4919,6 +6363,150 @@
     if (empty) empty.classList.toggle('hidden', logList.children.length > 0);
   }
 
+  function generateSessionRecapText() {
+    const camp = currentCampaign();
+    const session = camp.currentSession || 1;
+    const sessionStart = (camp.logs || [])
+      .filter(e => e.type === 'session' && (e.session || 1) === session)
+      .map(e => new Date(e.time).getTime())
+      .sort((a, b) => b - a)[0];
+    const sessionStartMs = Number.isFinite(sessionStart) ? sessionStart : 0;
+
+    const actions = (camp.logs || [])
+      .filter(e => (e.session || 1) === session && e.type !== 'session')
+      .slice(-12)
+      .map((e) => {
+        const label = resolveLogTargetLabel(camp, e);
+        return `- ${e.action}${label ? ` (${label})` : ''}`;
+      });
+
+    const pcs = Object.values(camp.entities || {}).filter(e => e.type === 'pc');
+    const falloutLines = [];
+    pcs.forEach((pc) => {
+      const active = (pc.fallout || []).filter(f => !f.resolved);
+      if (!active.length) return;
+      falloutLines.push(`- ${entityLabel(pc)}: ${active.length} active fallout`);
+    });
+
+    const taskLines = [];
+    pcs.forEach((pc) => {
+      const openTasks = (pc.tasks || []).filter(t => t.status !== 'Done');
+      if (!openTasks.length) return;
+      taskLines.push(`- ${entityLabel(pc)}: ${openTasks.length} open task(s)`);
+    });
+
+    const msgCount = (camp.messages || [])
+      .filter(m => new Date(m.time).getTime() >= sessionStartMs)
+      .length;
+
+    const lines = [];
+    lines.push(`Session ${session} recap for "${camp.name}"`);
+    lines.push('');
+    lines.push(`Messages this session: ${msgCount}`);
+    lines.push(`Ministry Attention: ${camp.ministryAttention || 0}/10`);
+    lines.push('');
+    lines.push('Notable actions:');
+    lines.push(...(actions.length ? actions : ['- No notable actions logged.']));
+    lines.push('');
+    lines.push('Active fallout:');
+    lines.push(...(falloutLines.length ? falloutLines : ['- None.']));
+    lines.push('');
+    lines.push('Open tasks:');
+    lines.push(...(taskLines.length ? taskLines : ['- None.']));
+    return lines.join('\n');
+  }
+
+  function openSessionRecapModal() {
+    const overlay = document.getElementById('modal-overlay');
+    const modal = document.getElementById('modal');
+    const content = document.getElementById('modal-content');
+    const titleEl = document.getElementById('modal-title');
+    if (titleEl) titleEl.textContent = 'Session Recap';
+    content.innerHTML = '';
+
+    const recap = generateSessionRecapText();
+    const textarea = document.createElement('textarea');
+    textarea.value = recap;
+    textarea.rows = 16;
+    textarea.style.width = '100%';
+    content.appendChild(textarea);
+
+    const row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.gap = '8px';
+    row.style.marginTop = '10px';
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'modal-submit';
+    copyBtn.textContent = 'Copy Recap';
+    const closeBtn = document.createElement('button');
+    closeBtn.textContent = 'Close';
+    row.appendChild(copyBtn);
+    row.appendChild(closeBtn);
+    content.appendChild(row);
+
+    copyBtn.addEventListener('click', async () => {
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(textarea.value);
+        } else {
+          textarea.select();
+          document.execCommand('copy');
+        }
+        showToast('Recap copied.', 'info');
+      } catch (_) {
+        showToast('Could not copy recap.', 'warn');
+      }
+    });
+    closeBtn.addEventListener('click', () => closeModal());
+
+    overlay.classList.remove('hidden');
+    modal.classList.remove('hidden');
+  }
+
+  function openShortcutHelpModal() {
+    const overlay = document.getElementById('modal-overlay');
+    const modal = document.getElementById('modal');
+    const content = document.getElementById('modal-content');
+    const titleEl = document.getElementById('modal-title');
+    if (titleEl) titleEl.textContent = 'Keyboard Shortcuts';
+    content.innerHTML = '';
+
+    const list = document.createElement('div');
+    list.className = 'modal-form';
+    const shortcuts = [
+      ['/', 'Focus entity search'],
+      ['Ctrl/Cmd + S', 'Save campaign'],
+      ['↑ / ↓', 'Select previous/next visible entity'],
+      ['← / →', 'Switch between top tabs'],
+      ['Shift + T', 'Add a task to selected PC'],
+      ['?', 'Open this shortcut help'],
+      ['Esc', 'Close modal/inspector']
+    ];
+    shortcuts.forEach(([keys, action]) => {
+      const row = document.createElement('div');
+      row.className = 'modal-field modal-field-inline';
+      const k = document.createElement('code');
+      k.textContent = keys;
+      k.style.minWidth = '140px';
+      const txt = document.createElement('span');
+      txt.textContent = action;
+      row.appendChild(k);
+      row.appendChild(txt);
+      list.appendChild(row);
+    });
+
+    const closeBtn = document.createElement('button');
+    closeBtn.className = 'modal-submit';
+    closeBtn.textContent = 'Close';
+    closeBtn.style.marginTop = '10px';
+    closeBtn.addEventListener('click', () => closeModal());
+    content.appendChild(list);
+    content.appendChild(closeBtn);
+
+    overlay.classList.remove('hidden');
+    modal.classList.remove('hidden');
+  }
+
   function messageTargetLabel(target) {
     if (target === 'party') return 'Party';
     if (target === 'gm') return 'GM';
@@ -4950,13 +6538,17 @@
   function appendMessage(target, text) {
     const camp = currentCampaign();
     if (!camp.messages) camp.messages = [];
+    const me = state.currentUser || (state.gmMode ? 'GM' : 'Player');
+    const readBy = {};
+    readBy[me] = true;
     camp.messages.push({
       id: generateId('msg'),
       time: new Date().toISOString(),
-      fromUser: state.currentUser || (state.gmMode ? 'GM' : 'Player'),
+      fromUser: me,
       fromRole: state.gmMode ? 'gm' : 'player',
       target: target || 'party',
-      text: text || ''
+      text: text || '',
+      readBy
     });
   }
 
@@ -4987,6 +6579,57 @@
     sel.value = Array.from(sel.options).some(o => o.value === prior) ? prior : 'party';
   }
 
+  function currentUserKey() {
+    return state.currentUser || (state.gmMode ? 'GM' : 'Player');
+  }
+
+  function isMessageUnreadForCurrentUser(msg) {
+    const me = currentUserKey();
+    if (!msg || msg.fromUser === me) return false;
+    if (!msg.readBy || typeof msg.readBy !== 'object') return true;
+    return !msg.readBy[me];
+  }
+
+  function messageMatchesFilter(msg) {
+    const mode = messageFilterState.mode || 'all';
+    if (mode === 'party') return (msg.target || 'party') === 'party';
+    if (mode === 'whispers') return (msg.target || 'party') !== 'party';
+    if (mode === 'unread') return isMessageUnreadForCurrentUser(msg);
+    return true;
+  }
+
+  function markVisibleMessagesRead(visibleMessages) {
+    const activeTab = document.querySelector('.tab-link.active');
+    if (!activeTab || activeTab.dataset.tab !== 'messages-view') return false;
+    const me = currentUserKey();
+    let changed = false;
+    (visibleMessages || []).forEach((msg) => {
+      if (msg.fromUser === me) return;
+      if (!msg.readBy || typeof msg.readBy !== 'object') msg.readBy = {};
+      if (!msg.readBy[me]) {
+        msg.readBy[me] = true;
+        changed = true;
+      }
+    });
+    return changed;
+  }
+
+  function updateMessagesUnreadBadge() {
+    const badge = document.getElementById('messages-unread-badge');
+    if (!badge) return;
+    const camp = currentCampaign();
+    if (!camp || !Array.isArray(camp.messages)) {
+      badge.classList.add('hidden');
+      return;
+    }
+    const unread = camp.messages
+      .filter(canViewMessage)
+      .filter(isMessageUnreadForCurrentUser)
+      .length;
+    badge.textContent = String(unread);
+    badge.classList.toggle('hidden', unread <= 0);
+  }
+
   function renderMessages() {
     const list = document.getElementById('messages-list');
     if (!list) return;
@@ -4997,11 +6640,15 @@
     populateMessageTargets();
     const modeBadge = document.getElementById('messages-mode-badge');
     if (modeBadge) modeBadge.textContent = state.gmMode ? 'GM View' : 'Player View';
+    const filterSel = document.getElementById('messages-filter-select');
+    if (filterSel) filterSel.value = messageFilterState.mode || 'all';
     list.innerHTML = '';
-    const visible = camp.messages.filter(canViewMessage);
+    const visible = camp.messages.filter(canViewMessage).filter(messageMatchesFilter);
+    const readChanged = markVisibleMessagesRead(visible);
     visible.slice().reverse().forEach((msg) => {
       const row = document.createElement('div');
       row.className = 'message-row ' + messageStyleClass(msg);
+      if (isMessageUnreadForCurrentUser(msg)) row.classList.add('unread');
       const meta = document.createElement('div');
       meta.className = 'message-meta';
       const from = msg.fromUser || (msg.fromRole === 'gm' ? 'GM' : 'Player');
@@ -5017,9 +6664,19 @@
     if (!visible.length) {
       const empty = document.createElement('div');
       empty.className = 'messages-empty';
-      empty.textContent = 'No messages yet.';
+      const mode = messageFilterState.mode || 'all';
+      empty.textContent = mode === 'unread'
+        ? 'No unread messages in this view.'
+        : mode === 'whispers'
+          ? 'No whispers yet. Use target select to whisper.'
+          : mode === 'party'
+            ? 'No party messages yet.'
+            : 'No messages yet. Start with a party message or whisper.';
       list.appendChild(empty);
     }
+    if (readChanged) saveCampaigns();
+    updateMessagesUnreadBadge();
+    updateUndoButtonState();
   }
 
   /**
@@ -5058,15 +6715,98 @@
     return JSON.stringify(camp, null, 2);
   }
 
+  function mergeCampaignData(importedCamp) {
+    const camp = currentCampaign();
+    if (!camp || !importedCamp) return { entities: 0, relationships: 0, messages: 0 };
+    const entityIdMap = {};
+    let addedEntities = 0;
+    let addedRelationships = 0;
+    let addedMessages = 0;
+    const mergedEntityIds = [];
+
+    Object.entries(importedCamp.entities || {}).forEach(([id, ent]) => {
+      const sourceEnt = JSON.parse(JSON.stringify(ent));
+      if (!camp.entities[id]) {
+        camp.entities[id] = sourceEnt;
+        entityIdMap[id] = id;
+        mergedEntityIds.push(id);
+        addedEntities += 1;
+      } else {
+        const newId = generateId(sourceEnt.type || 'ent');
+        sourceEnt.id = newId;
+        camp.entities[newId] = sourceEnt;
+        entityIdMap[id] = newId;
+        mergedEntityIds.push(newId);
+        addedEntities += 1;
+      }
+    });
+
+    // Remap internal entity references for merged entities when IDs were remapped.
+    mergedEntityIds.forEach((eid) => {
+      const ent = camp.entities[eid];
+      if (!ent) return;
+      if (Array.isArray(ent.members)) {
+        ent.members = ent.members.map((mid) => entityIdMap[mid] || mid).filter((mid) => !!camp.entities[mid]);
+      }
+      if (typeof ent.affiliation === 'string' && ent.affiliation) {
+        ent.affiliation = entityIdMap[ent.affiliation] || ent.affiliation;
+        if (!camp.entities[ent.affiliation]) ent.affiliation = '';
+      }
+    });
+
+    Object.values(importedCamp.relationships || {}).forEach((rel) => {
+      const source = entityIdMap[rel.source] || rel.source;
+      const target = entityIdMap[rel.target] || rel.target;
+      if (!camp.entities[source] || !camp.entities[target]) return;
+      const duplicate = Object.values(camp.relationships || {}).some((existing) => (
+        existing.source === source &&
+        existing.target === target &&
+        existing.type === rel.type &&
+        !!existing.secret === !!rel.secret
+      ));
+      if (duplicate) return;
+      const rid = (rel.id && !camp.relationships[rel.id]) ? rel.id : generateId('rel');
+      camp.relationships[rid] = Object.assign({}, JSON.parse(JSON.stringify(rel)), { id: rid, source, target });
+      addedRelationships += 1;
+    });
+
+    Object.entries(importedCamp.positions || {}).forEach(([id, pos]) => {
+      const mapped = entityIdMap[id] || id;
+      if (mapped && camp.entities[mapped] && !camp.positions[mapped]) {
+        camp.positions[mapped] = JSON.parse(JSON.stringify(pos));
+      }
+    });
+
+    if (!Array.isArray(camp.messages)) camp.messages = [];
+    (importedCamp.messages || []).forEach((msg) => {
+      const cloned = JSON.parse(JSON.stringify(msg));
+      cloned.id = (cloned.id && !camp.messages.some((m) => m.id === cloned.id)) ? cloned.id : generateId('msg');
+      camp.messages.push(cloned);
+      addedMessages += 1;
+    });
+
+    return { entities: addedEntities, relationships: addedRelationships, messages: addedMessages };
+  }
+
   /**
-   * Import a campaign JSON. Validates basic schema and assigns new
-   * campaign ID. Adds to the campaigns list and switches to it.
+   * Import a campaign JSON. Supports merge mode or import-as-new campaign.
    */
-  function importCampaign(jsonStr) {
+  async function importCampaign(jsonStr) {
     try {
       const data = JSON.parse(jsonStr);
       if (!data.entities || !data.relationships) {
         showToast('Invalid campaign file', 'warn');
+        return;
+      }
+      const merge = await askConfirm(
+        'Merge this file into the current campaign? Cancel imports as a separate campaign.',
+        'Import Mode'
+      );
+      if (merge) {
+        captureUndoSnapshot('Merge imported campaign');
+        const merged = mergeCampaignData(data);
+        saveAndRefresh();
+        showToast(`Merged: ${merged.entities} entities, ${merged.relationships} relationships, ${merged.messages} messages.`, 'info');
         return;
       }
       const newId = generateId('camp');
@@ -5074,6 +6814,12 @@
       data.name = data.name || 'Imported Campaign';
       data.owner = state.currentUser || null;
       data.gmUsers = state.currentUser ? [state.currentUser] : [];
+      data.memberUsers = state.currentUser ? [state.currentUser] : [];
+      data.inviteCode = '';
+      data.sourceInviteCode = '';
+      if (!Array.isArray(data.messages)) data.messages = [];
+      if (!Array.isArray(data.clocks)) data.clocks = [];
+      if (!Array.isArray(data.undoStack)) data.undoStack = [];
       state.campaigns[newId] = data;
       state.currentCampaignId = newId;
       saveCampaigns();
@@ -5166,14 +6912,67 @@
     document.body.removeChild(link);
   }
 
+  function prepareSheetForPrint(sheetNode) {
+    const clone = sheetNode.cloneNode(true);
+    clone.classList.add('print-clean-sheet');
+
+    clone.querySelectorAll('button, .section-help').forEach((el) => el.remove());
+
+    clone.querySelectorAll('input[type="checkbox"]').forEach((chk) => {
+      const mark = document.createElement('span');
+      mark.className = 'print-check';
+      mark.textContent = chk.checked ? '[x]' : '[ ]';
+      chk.replaceWith(mark);
+    });
+
+    clone.querySelectorAll('input').forEach((inp) => {
+      const type = (inp.getAttribute('type') || 'text').toLowerCase();
+      if (['hidden', 'file', 'checkbox', 'radio', 'button', 'submit'].includes(type)) {
+        inp.remove();
+        return;
+      }
+      const span = document.createElement('span');
+      span.className = 'print-field';
+      span.textContent = inp.value || '—';
+      inp.replaceWith(span);
+    });
+
+    clone.querySelectorAll('select').forEach((sel) => {
+      const span = document.createElement('span');
+      span.className = 'print-field';
+      span.textContent = sel.options[sel.selectedIndex]?.textContent || sel.value || '—';
+      sel.replaceWith(span);
+    });
+
+    clone.querySelectorAll('textarea').forEach((ta) => {
+      const block = document.createElement('div');
+      block.className = 'print-text-block';
+      block.textContent = ta.value || '';
+      ta.replaceWith(block);
+    });
+
+    return clone;
+  }
+
   /**
    * Print a single entity sheet. Temporarily opens the sheet in a new
    * window and triggers print. Uses the same HTML structure but only
    * includes the selected entity.
    */
-  function printEntitySheet(entityId) {
+  async function printEntitySheet(entityId, options = {}) {
     const ent = currentCampaign().entities[entityId];
     if (!ent) return;
+    const forcePlayerSafe = !!options.forcePlayerSafe;
+    let includeGM = state.gmMode && !forcePlayerSafe;
+    if (state.gmMode && !forcePlayerSafe) {
+      includeGM = await askConfirm(
+        'Include GM-only notes/details in printout? Cancel prints a player-safe copy.',
+        'Print Mode'
+      );
+    }
+    const prevMode = state.gmMode;
+    const prevSelected = state.selectedEntityId;
+    state.gmMode = !!includeGM;
     const win = window.open('', '_blank');
     const doc = win.document;
     doc.write('<html><head><title>Print</title>');
@@ -5181,19 +6980,27 @@
     doc.write('</head><body>');
     // Render the sheet for printing
     const div = document.createElement('div');
-    div.className = 'sheet-container';
+    div.className = 'sheet-container print-clean-sheet';
     if (ent.type === 'pc') {
       renderPCSheet(ent);
-      div.innerHTML = document.getElementById('sheet-container').innerHTML;
+      const prepared = prepareSheetForPrint(document.getElementById('sheet-container'));
+      div.innerHTML = prepared.innerHTML;
     } else if (ent.type === 'npc') {
       renderNPCSheet(ent);
-      div.innerHTML = document.getElementById('sheet-container').innerHTML;
+      const prepared = prepareSheetForPrint(document.getElementById('sheet-container'));
+      div.innerHTML = prepared.innerHTML;
     } else if (ent.type === 'org') {
       renderOrgSheet(ent);
-      div.innerHTML = document.getElementById('sheet-container').innerHTML;
+      const prepared = prepareSheetForPrint(document.getElementById('sheet-container'));
+      div.innerHTML = prepared.innerHTML;
     }
     doc.body.innerHTML = div.outerHTML;
+    doc.body.classList.add('print-sheet-view');
     doc.close();
+    state.gmMode = prevMode;
+    state.selectedEntityId = prevSelected;
+    applyModeClasses();
+    renderSheetView();
     setTimeout(() => {
       win.print();
       win.close();
@@ -5208,18 +7015,39 @@
   // -----------------------------------------------------------------------
   //  DICE ROLLER
   // -----------------------------------------------------------------------
-  function openDiceRollerForSkill(skillName, mastered) {
-    openDiceRoller(skillName, mastered ? 2 : 1);
+  function openDiceRollerForSkill(skillName, mastered, pcContext = null) {
+    const skills = pcContext && Array.isArray(pcContext.skills)
+      ? pcContext.skills.map((s) => s.name).filter(Boolean)
+      : [];
+    const domains = pcContext && Array.isArray(pcContext.domains)
+      ? pcContext.domains.map((d) => d.name).filter(Boolean)
+      : [];
+    const equipmentTags = pcContext && Array.isArray(pcContext.inventory)
+      ? Array.from(new Set(pcContext.inventory.flatMap((i) => Array.isArray(i.tags) ? i.tags : []).filter(Boolean)))
+      : [];
+    openDiceRoller(skillName, mastered ? 2 : 1, {
+      allowDomainBonus: true,
+      allowTagHooks: true,
+      composer: {
+        skill: skillName || '',
+        mastered: !!mastered,
+        skills,
+        domains,
+        equipmentTags
+      },
+      logTargetId: pcContext ? pcContext.id : ''
+    });
   }
 
-  function openDiceRollerForResistance(resistanceName, resistanceValue) {
+  function openDiceRollerForResistance(resistanceName, resistanceValue, pcContext = null) {
     const bonus = Number.isFinite(resistanceValue) ? resistanceValue : 0;
     openDiceRoller(`${resistanceName} Resistance`, 1, {
       dice: [{ sides: 10, label: 'D10', color: '#9c4221' }],
       initialDifficulty: bonus,
       lockDifficulty: true,
       modifierLabel: 'Resistance bonus:',
-      helperText: `Using ${resistanceName} +${bonus}.`
+      helperText: `Using ${resistanceName} +${bonus}.`,
+      logTargetId: pcContext ? pcContext.id : ''
     });
   }
 
@@ -5294,6 +7122,103 @@
     modRow.appendChild(modLabel);
     modRow.appendChild(modSelect);
     wrap.appendChild(modRow);
+    let composerMasteredChk = null;
+    let composerDomainChk = null;
+    let composerDomainSel = null;
+    let composerTagImpact = null;
+    if (options.composer) {
+      const comp = options.composer;
+      const box = document.createElement('div');
+      box.className = 'dice-composer';
+
+      const title = document.createElement('div');
+      title.className = 'dice-hist-title';
+      title.textContent = 'Roll Composer';
+      box.appendChild(title);
+
+      const skillRow = document.createElement('div');
+      skillRow.className = 'dice-mod-row';
+      const skillLbl = document.createElement('label');
+      skillLbl.textContent = 'Skill:';
+      const skillVal = document.createElement('select');
+      const skillOptions = (comp.skills && comp.skills.length) ? comp.skills : [comp.skill || '(custom)'];
+      skillOptions.forEach((name) => {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = name;
+        if (name === comp.skill) opt.selected = true;
+        skillVal.appendChild(opt);
+      });
+      skillVal.disabled = true;
+      skillRow.appendChild(skillLbl);
+      skillRow.appendChild(skillVal);
+      box.appendChild(skillRow);
+
+      const masteryRow = document.createElement('div');
+      masteryRow.className = 'dice-domain-row';
+      const mLbl = document.createElement('label');
+      mLbl.className = 'dice-domain-label';
+      composerMasteredChk = document.createElement('input');
+      composerMasteredChk.type = 'checkbox';
+      composerMasteredChk.checked = !!comp.mastered;
+      mLbl.appendChild(composerMasteredChk);
+      mLbl.appendChild(document.createTextNode(' Mastery applies (+1 die)'));
+      masteryRow.appendChild(mLbl);
+      box.appendChild(masteryRow);
+
+      const domainRow = document.createElement('div');
+      domainRow.className = 'dice-domain-row';
+      const dLbl = document.createElement('label');
+      dLbl.className = 'dice-domain-label';
+      composerDomainChk = document.createElement('input');
+      composerDomainChk.type = 'checkbox';
+      dLbl.appendChild(composerDomainChk);
+      dLbl.appendChild(document.createTextNode(' Domain applies (+1 die)'));
+      domainRow.appendChild(dLbl);
+      if (Array.isArray(comp.domains) && comp.domains.length) {
+        composerDomainSel = document.createElement('select');
+        comp.domains.forEach((name) => {
+          const opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          composerDomainSel.appendChild(opt);
+        });
+        composerDomainSel.disabled = true;
+        composerDomainChk.addEventListener('change', () => {
+          composerDomainSel.disabled = !composerDomainChk.checked;
+        });
+        domainRow.appendChild(composerDomainSel);
+      }
+      box.appendChild(domainRow);
+
+      const tagRow = document.createElement('div');
+      tagRow.className = 'dice-mod-row';
+      const tagLbl = document.createElement('label');
+      tagLbl.textContent = 'Equipment impact:';
+      composerTagImpact = document.createElement('select');
+      [
+        { value: '0', label: 'No impact (0)' },
+        { value: '1', label: 'Helpful tags (+1 die)' },
+        { value: '-1', label: 'Hindering tags (-1 die)' }
+      ].forEach((optData) => {
+        const opt = document.createElement('option');
+        opt.value = optData.value;
+        opt.textContent = optData.label;
+        composerTagImpact.appendChild(opt);
+      });
+      tagRow.appendChild(tagLbl);
+      tagRow.appendChild(composerTagImpact);
+      box.appendChild(tagRow);
+
+      if (Array.isArray(comp.equipmentTags) && comp.equipmentTags.length) {
+        const tagHint = document.createElement('div');
+        tagHint.className = 'text-muted';
+        tagHint.style.fontSize = '0.78rem';
+        tagHint.textContent = 'Available tags: ' + comp.equipmentTags.join(', ');
+        box.appendChild(tagHint);
+      }
+      wrap.appendChild(box);
+    }
     // Mastered / base pool info
     if (poolBonus && poolBonus > 1) {
       const mastNote = document.createElement('div');
@@ -5310,6 +7235,41 @@
       helper.style.marginTop = '-6px';
       helper.textContent = options.helperText;
       wrap.appendChild(helper);
+    }
+    let domainBonusChk = null;
+    if (options.allowDomainBonus) {
+      const domainRow = document.createElement('div');
+      domainRow.className = 'dice-domain-row';
+      const lbl = document.createElement('label');
+      lbl.className = 'dice-domain-label';
+      domainBonusChk = document.createElement('input');
+      domainBonusChk.type = 'checkbox';
+      lbl.appendChild(domainBonusChk);
+      lbl.appendChild(document.createTextNode(' Add Domain bonus (+1 die)'));
+      domainRow.appendChild(lbl);
+      wrap.appendChild(domainRow);
+    }
+    let equipmentTagSelect = null;
+    if (options.allowTagHooks) {
+      const tagRow = document.createElement('div');
+      tagRow.className = 'dice-domain-row';
+      const tagLabel = document.createElement('label');
+      tagLabel.className = 'dice-domain-label';
+      tagLabel.textContent = 'Equipment tag modifier:';
+      equipmentTagSelect = document.createElement('select');
+      [
+        { value: '0', label: 'None (0)' },
+        { value: '1', label: 'Advantage (+1 die)' },
+        { value: '-1', label: 'Drawback (-1 die)' }
+      ].forEach((optData) => {
+        const opt = document.createElement('option');
+        opt.value = optData.value;
+        opt.textContent = optData.label;
+        equipmentTagSelect.appendChild(opt);
+      });
+      tagRow.appendChild(tagLabel);
+      tagRow.appendChild(equipmentTagSelect);
+      wrap.appendChild(tagRow);
     }
 
     // Result display
@@ -5333,8 +7293,14 @@
     function rollDie(sides, label, el) {
       const rules = getRulesConfig();
       const mod = parseInt(document.getElementById('dice-difficulty').value, 10);
-      const base = poolBonus || 1;
-      const pool = base + mod;
+      const base = composerMasteredChk ? (composerMasteredChk.checked ? 2 : 1) : (poolBonus || 1);
+      const domainBonus = composerDomainChk
+        ? (composerDomainChk.checked ? 1 : 0)
+        : (domainBonusChk && domainBonusChk.checked ? 1 : 0);
+      const equipmentBonus = composerTagImpact
+        ? (parseInt(composerTagImpact.value, 10) || 0)
+        : (equipmentTagSelect ? (parseInt(equipmentTagSelect.value, 10) || 0) : 0);
+      const pool = base + mod + domainBonus + equipmentBonus;
       const rollCount = Math.max(1, pool);
       const downgradeSteps = rules.difficultyDowngrades ? Math.max(0, -pool) : 0;
       let rolls = [];
@@ -5350,6 +7316,8 @@
 
       let note = rollCount > 1 ? 'kept highest' : '';
       if (downgradeSteps > 0) note = (note ? note + ', ' : '') + `outcome downgraded ${downgradeSteps} step${downgradeSteps > 1 ? 's' : ''}`;
+      if (equipmentBonus > 0) note = (note ? note + ', ' : '') + 'equipment advantage';
+      if (equipmentBonus < 0) note = (note ? note + ', ' : '') + 'equipment drawback';
 
       if (sides === 10) {
         const rawBand = d10OutcomeBand(kept);
@@ -5363,6 +7331,7 @@
       el.appendChild(big);
       el.appendChild(sub);
       addToHistory(histList, label, kept, rolls, note, sides, downgradeSteps);
+      if (options.logTargetId) appendLog(`Rolled ${label}: ${kept}`, options.logTargetId);
     }
 
     function d10OutcomeBand(value) {
@@ -5456,6 +7425,179 @@
     editField.appendChild(editLabel);
     content.appendChild(editField);
 
+    // Collaboration (invite + permissions)
+    if (!Array.isArray(camp.memberUsers)) camp.memberUsers = [];
+    if (camp.owner && !camp.memberUsers.includes(camp.owner)) camp.memberUsers.unshift(camp.owner);
+    const collabField = document.createElement('div');
+    collabField.className = 'modal-field';
+    collabField.style.border = '1px solid var(--spire-border)';
+    collabField.style.borderRadius = 'var(--radius)';
+    collabField.style.padding = '8px';
+    collabField.style.background = 'var(--spire-mid)';
+    const collabLabel = document.createElement('label');
+    collabLabel.textContent = 'Collaboration';
+    collabField.appendChild(collabLabel);
+    const canManageCollab = !!(state.currentUser && camp.owner === state.currentUser);
+
+    // Pull latest members from shared invite snapshot to avoid overwriting joins.
+    if (camp.inviteCode) {
+      const sharedRec = loadSharedInvites()[String(camp.inviteCode).trim().toUpperCase()];
+      const sharedMembers = Array.isArray(sharedRec?.data?.memberUsers) ? sharedRec.data.memberUsers : [];
+      if (sharedMembers.length) {
+        camp.memberUsers = Array.from(new Set([...(camp.memberUsers || []), ...sharedMembers]));
+      }
+    }
+
+    const inviteRow = document.createElement('div');
+    inviteRow.style.display = 'flex';
+    inviteRow.style.gap = '6px';
+    inviteRow.style.alignItems = 'center';
+    inviteRow.style.marginTop = '6px';
+    const inviteInput = document.createElement('input');
+    inviteInput.type = 'text';
+    inviteInput.readOnly = true;
+    inviteInput.value = camp.inviteCode || '';
+    inviteInput.placeholder = 'No active invite code';
+    inviteInput.style.flex = '1';
+    inviteRow.appendChild(inviteInput);
+
+    const copyInviteBtn = document.createElement('button');
+    copyInviteBtn.textContent = 'Copy';
+    copyInviteBtn.disabled = !camp.inviteCode;
+    copyInviteBtn.addEventListener('click', async () => {
+      if (!camp.inviteCode) return;
+      try {
+        if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(camp.inviteCode);
+        else {
+          inviteInput.select();
+          document.execCommand('copy');
+        }
+        showToast('Invite code copied.', 'info');
+      } catch (_) {
+        showToast('Could not copy invite code.', 'warn');
+      }
+    });
+    inviteRow.appendChild(copyInviteBtn);
+
+    const genInviteBtn = document.createElement('button');
+    genInviteBtn.textContent = camp.inviteCode ? 'Rotate' : 'Generate';
+    genInviteBtn.disabled = !canManageCollab;
+    genInviteBtn.addEventListener('click', () => {
+      camp.inviteCode = generateInviteCode();
+      publishCampaignInvite(camp);
+      saveCampaigns();
+      openSettingsModal();
+      showToast('Invite code updated.', 'info');
+    });
+    inviteRow.appendChild(genInviteBtn);
+
+    const revokeInviteBtn = document.createElement('button');
+    revokeInviteBtn.textContent = 'Revoke';
+    revokeInviteBtn.disabled = !canManageCollab || !camp.inviteCode;
+    revokeInviteBtn.addEventListener('click', async () => {
+      if (!camp.inviteCode) return;
+      const ok = await askConfirm('Revoke this invite code?', 'Revoke Invite');
+      if (!ok) return;
+      revokeCampaignInvite(camp);
+      camp.inviteCode = '';
+      saveCampaigns();
+      openSettingsModal();
+      showToast('Invite code revoked.', 'info');
+    });
+    inviteRow.appendChild(revokeInviteBtn);
+    collabField.appendChild(inviteRow);
+
+    const collabMeta = document.createElement('div');
+    collabMeta.className = 'text-muted';
+    collabMeta.style.fontSize = '0.8rem';
+    collabMeta.style.marginTop = '4px';
+    collabMeta.textContent = canManageCollab
+      ? 'Share invite code with players. Owner can manage GM permissions and membership.'
+      : `Campaign owner: ${camp.owner || 'Unknown'}. Only owner can manage invite and permissions.`;
+    collabField.appendChild(collabMeta);
+
+    const membersWrap = document.createElement('div');
+    membersWrap.style.display = 'flex';
+    membersWrap.style.flexDirection = 'column';
+    membersWrap.style.gap = '6px';
+    membersWrap.style.marginTop = '8px';
+    const membersHeader = document.createElement('strong');
+    membersHeader.textContent = 'Members';
+    membersWrap.appendChild(membersHeader);
+
+    const users = camp.memberUsers.length ? camp.memberUsers.slice() : (camp.owner ? [camp.owner] : []);
+    users.forEach((username) => {
+      const row = document.createElement('div');
+      row.className = 'settings-rel-row';
+      const role = username === camp.owner ? 'Owner' : (camp.gmUsers || []).includes(username) ? 'Co-GM' : 'Player';
+      const label = document.createElement('span');
+      label.textContent = `${username} (${role})`;
+      row.appendChild(label);
+
+      if (canManageCollab && username !== camp.owner) {
+        const toggleRoleBtn = document.createElement('button');
+        toggleRoleBtn.textContent = (camp.gmUsers || []).includes(username) ? 'Demote' : 'Promote GM';
+        toggleRoleBtn.style.marginRight = '4px';
+        toggleRoleBtn.addEventListener('click', () => {
+          if (!Array.isArray(camp.gmUsers)) camp.gmUsers = [];
+          if (camp.gmUsers.includes(username)) camp.gmUsers = camp.gmUsers.filter((u) => u !== username);
+          else camp.gmUsers.push(username);
+          saveCampaigns();
+          openSettingsModal();
+        });
+        row.appendChild(toggleRoleBtn);
+
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'row-remove-btn';
+        removeBtn.textContent = '×';
+        removeBtn.title = 'Remove member';
+        removeBtn.addEventListener('click', () => {
+          camp.memberUsers = (camp.memberUsers || []).filter((u) => u !== username);
+          camp.gmUsers = (camp.gmUsers || []).filter((u) => u !== username);
+          saveCampaigns();
+          openSettingsModal();
+        });
+        row.appendChild(removeBtn);
+      }
+      membersWrap.appendChild(row);
+    });
+
+    if (canManageCollab) {
+      const addRow = document.createElement('div');
+      addRow.style.display = 'flex';
+      addRow.style.gap = '6px';
+      const addSel = document.createElement('select');
+      const knownUsers = Object.keys(state.users || {})
+        .filter((u) => !(camp.memberUsers || []).includes(u))
+        .sort((a, b) => a.localeCompare(b));
+      const emptyOpt = document.createElement('option');
+      emptyOpt.value = '';
+      emptyOpt.textContent = knownUsers.length ? 'Add user…' : 'No available users';
+      addSel.appendChild(emptyOpt);
+      knownUsers.forEach((u) => {
+        const opt = document.createElement('option');
+        opt.value = u;
+        opt.textContent = u;
+        addSel.appendChild(opt);
+      });
+      addRow.appendChild(addSel);
+      const addBtn = document.createElement('button');
+      addBtn.textContent = 'Add';
+      addBtn.disabled = !knownUsers.length;
+      addBtn.addEventListener('click', () => {
+        if (!addSel.value) return;
+        if (!Array.isArray(camp.memberUsers)) camp.memberUsers = [];
+        if (!camp.memberUsers.includes(addSel.value)) camp.memberUsers.push(addSel.value);
+        saveCampaigns();
+        openSettingsModal();
+      });
+      addRow.appendChild(addBtn);
+      membersWrap.appendChild(addRow);
+    }
+
+    collabField.appendChild(membersWrap);
+    content.appendChild(collabField);
+
     // Rules profile
     const rulesField = document.createElement('div');
     rulesField.className = 'modal-field';
@@ -5524,6 +7666,82 @@
       saveCampaigns();
       syncRulesVisibility();
     });
+
+    // Fallout lookup prompt editor (campaign-specific)
+    if (!camp.falloutGuidance) camp.falloutGuidance = defaultFalloutGuidance();
+    const falloutSettings = document.createElement('div');
+    falloutSettings.className = 'modal-field';
+    const falloutLabel = document.createElement('label');
+    falloutLabel.textContent = 'Fallout Lookup Prompts';
+    const falloutMeta = document.createElement('div');
+    falloutMeta.className = 'text-muted';
+    falloutMeta.style.fontSize = '0.8rem';
+    falloutMeta.style.marginBottom = '6px';
+    falloutMeta.textContent = 'Edit prompt lists used by the Fallout Lookup button (one prompt per line).';
+
+    const falloutTrackSel = document.createElement('select');
+    ['Blood','Mind','Silver','Shadow','Reputation'].forEach((track) => {
+      const opt = document.createElement('option');
+      opt.value = track;
+      opt.textContent = track;
+      falloutTrackSel.appendChild(opt);
+    });
+    falloutTrackSel.style.marginBottom = '8px';
+
+    const falloutEditorWrap = document.createElement('div');
+    falloutEditorWrap.style.display = 'flex';
+    falloutEditorWrap.style.flexDirection = 'column';
+    falloutEditorWrap.style.gap = '8px';
+
+    function renderFalloutEditor(track) {
+      falloutEditorWrap.innerHTML = '';
+      if (!camp.falloutGuidance[track]) {
+        camp.falloutGuidance[track] = { Minor: [], Moderate: [], Severe: [] };
+      }
+      ['Minor', 'Moderate', 'Severe'].forEach((severity) => {
+        const row = document.createElement('div');
+        row.className = 'modal-field';
+        row.style.marginBottom = '0';
+        const lbl = document.createElement('label');
+        lbl.textContent = severity;
+        const ta = document.createElement('textarea');
+        ta.rows = 3;
+        ta.value = (camp.falloutGuidance[track][severity] || []).join('\n');
+        ta.addEventListener('change', (e) => {
+          camp.falloutGuidance[track][severity] = e.target.value
+            .split('\n')
+            .map(v => v.trim())
+            .filter(Boolean);
+          saveCampaigns();
+        });
+        row.appendChild(lbl);
+        row.appendChild(ta);
+        falloutEditorWrap.appendChild(row);
+      });
+    }
+
+    falloutTrackSel.addEventListener('change', () => {
+      renderFalloutEditor(falloutTrackSel.value);
+    });
+    renderFalloutEditor('Blood');
+
+    const resetFalloutBtn = document.createElement('button');
+    resetFalloutBtn.textContent = 'Reset Fallout Prompts to Defaults';
+    resetFalloutBtn.addEventListener('click', async () => {
+      const ok = await askConfirm('Reset all fallout lookup prompts in this campaign to defaults?', 'Reset Fallout Prompts');
+      if (!ok) return;
+      camp.falloutGuidance = defaultFalloutGuidance();
+      renderFalloutEditor(falloutTrackSel.value || 'Blood');
+      saveCampaigns();
+      showToast('Fallout prompts reset to defaults.', 'info');
+    });
+
+    falloutSettings.appendChild(falloutLabel);
+    falloutSettings.appendChild(falloutMeta);
+    falloutSettings.appendChild(falloutTrackSel);
+    falloutSettings.appendChild(falloutEditorWrap);
+    falloutSettings.appendChild(resetFalloutBtn);
+    content.appendChild(falloutSettings);
 
     // Relationship types
     const relSection = document.createElement('div');
@@ -5769,6 +7987,27 @@
   function setupEventListeners() {
     if (eventListenersBound) return;
     eventListenersBound = true;
+    window.addEventListener('storage', (e) => {
+      if (!state.currentUser) return;
+      const revKey = userScopedKey('spire-campaigns-rev');
+      if (e.key !== revKey) return;
+      if (!e.newValue) return;
+      if (e.newValue === state.lastSeenRevision) return;
+      const newlyConflicted = !state.syncConflictActive;
+      state.lastSeenRevision = e.newValue;
+      setSyncConflictWarning(true, conflictWarningText());
+      setSaveState('error', 'Sync conflict');
+      if (newlyConflicted && (state.localEditsSinceConflict || 0) === 0) {
+        setTimeout(async () => {
+          if (!state.syncConflictActive || (state.localEditsSinceConflict || 0) > 0) return;
+          const ok = await askConfirm(
+            'Campaign updated in another tab. Reload latest now?',
+            'Sync Conflict'
+          );
+          if (ok) reloadCampaignFromStorage();
+        }, 60);
+      }
+    });
     // Search box
     document.getElementById('search-input').addEventListener('input', () => {
       renderEntityLists();
@@ -5996,9 +8235,30 @@
     });
     // Save button (explicit save)
     document.getElementById('save-btn').addEventListener('click', () => {
-      saveCampaigns();
-      showToast('Campaign saved', 'info');
+      void attemptManualSave();
     });
+    const syncReloadBtn = document.getElementById('sync-reload-btn');
+    if (syncReloadBtn) {
+      syncReloadBtn.addEventListener('click', () => {
+        reloadCampaignFromStorage();
+      });
+    }
+    const syncIndicator = document.getElementById('sync-conflict-indicator');
+    if (syncIndicator) {
+      syncIndicator.addEventListener('click', () => {
+        openSyncConflictModal();
+      });
+    }
+    const undoBtn = document.getElementById('undo-btn');
+    if (undoBtn) {
+      undoBtn.addEventListener('click', () => {
+        undoLastDestructiveAction();
+      });
+    }
+    const shortcutsBtn = document.getElementById('shortcuts-btn');
+    if (shortcutsBtn) {
+      shortcutsBtn.addEventListener('click', () => openShortcutHelpModal());
+    }
     // Node selection dropdown: jump to a node from the graph or sheet
     const nodeSel = document.getElementById('node-select');
     if (nodeSel) {
@@ -6056,8 +8316,10 @@
     }
     // Export button
     document.getElementById('export-btn').addEventListener('click', async () => {
-      // Ask GM or player export
-      const gm = state.gmMode ? await askConfirm('Export full GM data? Cancel for player-safe export.', 'Export Mode') : false;
+      // Default is player-safe; GM must explicitly opt into full export.
+      const gm = state.gmMode
+        ? await askConfirm('Include GM-only and secret data? Cancel exports player-safe copy.', 'Export GM Data')
+        : false;
       const json = exportCampaign(gm);
       const blob = new Blob([json], { type: 'application/json' });
       const link = document.createElement('a');
@@ -6098,9 +8360,16 @@
     document.getElementById('clear-log-btn').addEventListener('click', async () => {
       const ok = await askConfirm('Clear activity log?', 'Clear Log');
       if (!ok) return;
+      captureUndoSnapshot('Clear activity log');
       currentCampaign().logs = [];
       saveAndRefresh();
     });
+    const recapBtn = document.getElementById('generate-recap-btn');
+    if (recapBtn) {
+      recapBtn.addEventListener('click', () => {
+        openSessionRecapModal();
+      });
+    }
     const sendMessageBtn = document.getElementById('send-message-btn');
     const messageInput = document.getElementById('message-input');
     const targetSelect = document.getElementById('message-target-select');
@@ -6118,12 +8387,51 @@
         if (e.key === 'Enter') sendMessage();
       });
     }
+    const messagesFilterSel = document.getElementById('messages-filter-select');
+    if (messagesFilterSel) {
+      messagesFilterSel.value = messageFilterState.mode || 'all';
+      messagesFilterSel.addEventListener('change', (e) => {
+        messageFilterState.mode = e.target.value || 'all';
+        renderMessages();
+      });
+    }
+    const entitySortSel = document.getElementById('entity-sort-select');
+    if (entitySortSel) {
+      entitySortSel.value = currentCampaign().entitySort || 'manual';
+      entitySortSel.addEventListener('change', (e) => {
+        const camp = currentCampaign();
+        camp.entitySort = ['manual', 'name', 'pinned'].includes(e.target.value) ? e.target.value : 'manual';
+        saveCampaigns();
+        renderEntityLists();
+      });
+    }
+    const entityPinOnly = document.getElementById('entity-pin-only');
+    if (entityPinOnly) {
+      entityPinOnly.checked = !!currentCampaign().entityPinnedOnly;
+      entityPinOnly.addEventListener('change', (e) => {
+        currentCampaign().entityPinnedOnly = !!e.target.checked;
+        saveCampaigns();
+        renderEntityLists();
+      });
+    }
+    const markMessagesReadBtn = document.getElementById('mark-messages-read-btn');
+    if (markMessagesReadBtn) {
+      markMessagesReadBtn.addEventListener('click', () => {
+        const camp = currentCampaign();
+        if (!camp || !Array.isArray(camp.messages)) return;
+        const visible = camp.messages.filter(canViewMessage).filter(messageMatchesFilter);
+        const changed = markVisibleMessagesRead(visible);
+        if (changed) saveCampaigns();
+        renderMessages();
+      });
+    }
     const clearMessagesBtn = document.getElementById('clear-messages-btn');
     if (clearMessagesBtn) {
       clearMessagesBtn.addEventListener('click', async () => {
         const ok = await askConfirm('Clear all table messages?', 'Clear Messages');
         if (!ok) return;
         const camp = currentCampaign();
+        captureUndoSnapshot('Clear table messages');
         camp.messages = [];
         saveAndRefresh();
       });
@@ -6138,13 +8446,30 @@
       if (e.key === '/' && !e.target.matches('input, textarea')) {
         document.getElementById('search-input').focus();
         e.preventDefault();
+      } else if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !e.target.matches('input, textarea, select')) {
+        const modalOpen = !document.getElementById('modal')?.classList.contains('hidden');
+        if (modalOpen) return;
+        selectAdjacentEntity(e.key === 'ArrowDown' ? 1 : -1);
+        e.preventDefault();
+      } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.target.matches('input, textarea, select')) {
+        const modalOpen = !document.getElementById('modal')?.classList.contains('hidden');
+        if (modalOpen) return;
+        selectAdjacentTab(e.key === 'ArrowRight' ? 1 : -1);
+        e.preventDefault();
+      } else if (e.key.toLowerCase() === 't' && e.shiftKey && !e.target.matches('input, textarea, select')) {
+        const modalOpen = !document.getElementById('modal')?.classList.contains('hidden');
+        if (modalOpen) return;
+        quickAddTaskToSelectedPC();
+        e.preventDefault();
+      } else if (e.key === '?' && !e.target.matches('input, textarea')) {
+        openShortcutHelpModal();
+        e.preventDefault();
       } else if (e.key === 'Escape') {
         // Close inspector or modals
         document.getElementById('inspector').classList.add('hidden');
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
         e.preventDefault();
-        saveCampaigns();
-        showToast('Campaign saved', 'info');
+        void attemptManualSave();
       }
     });
     // Tab switching
@@ -6187,11 +8512,29 @@
    */
   function initAfterLoad() {
     const camp = currentCampaign();
+    setSyncConflictWarning(false);
+    if (!Array.isArray(camp.clocks)) camp.clocks = [];
     if (camp.owner === undefined || camp.owner === null) camp.owner = state.currentUser || null;
     if (!Array.isArray(camp.gmUsers) || !camp.gmUsers.length) {
       camp.gmUsers = camp.owner ? [camp.owner] : (state.currentUser ? [state.currentUser] : []);
     }
     if (camp.owner && !camp.gmUsers.includes(camp.owner)) camp.gmUsers.unshift(camp.owner);
+    if (!Array.isArray(camp.memberUsers)) camp.memberUsers = camp.owner ? [camp.owner] : [];
+    if (camp.owner && !camp.memberUsers.includes(camp.owner)) camp.memberUsers.unshift(camp.owner);
+    if (camp.sourceInviteCode) {
+      const code = String(camp.sourceInviteCode).toUpperCase();
+      const sharedRec = loadSharedInvites()[code];
+      const sharedMembers = Array.isArray(sharedRec?.data?.memberUsers) ? sharedRec.data.memberUsers : [];
+      if (sharedMembers.length && state.currentUser && !sharedMembers.includes(state.currentUser)) {
+        showToast('Access revoked for this joined campaign.', 'warn');
+        return;
+      }
+    }
+    if (state.currentUser && camp.memberUsers.length && !camp.memberUsers.includes(state.currentUser)) {
+      showToast('You no longer have access to this campaign.', 'warn');
+      renderModeScreenCampaigns();
+      return;
+    }
     renderCampaignName();
     applyModeClasses();
     toggleDarkMode(camp.darkMode);
@@ -6213,6 +8556,10 @@
     if (camp.allowPlayerEditing === undefined) camp.allowPlayerEditing = true;
     if (!camp.gmPin) camp.gmPin = '';
     if (camp.ministryAttention === undefined) camp.ministryAttention = 0;
+    if (!Array.isArray(camp.memberUsers)) camp.memberUsers = [];
+    if (camp.owner && !camp.memberUsers.includes(camp.owner)) camp.memberUsers.unshift(camp.owner);
+    if (camp.inviteCode === undefined) camp.inviteCode = '';
+    if (camp.sourceInviteCode === undefined) camp.sourceInviteCode = '';
     if (!camp.rulesProfile) camp.rulesProfile = 'Core';
     if (!camp.customRules) {
       camp.customRules = {
@@ -6221,9 +8568,21 @@
         clearStressOnFallout: true
       };
     }
+    if (!camp.falloutGuidance) camp.falloutGuidance = defaultFalloutGuidance();
     if (!camp.graphViews) camp.graphViews = {};
     if (!camp.sectionCollapse) camp.sectionCollapse = {};
+    if (!camp.taskViewByPc || typeof camp.taskViewByPc !== 'object') camp.taskViewByPc = {};
+    if (!camp.taskSortByPc || typeof camp.taskSortByPc !== 'object') camp.taskSortByPc = {};
+    if (camp.sessionPrepTasksOnly === undefined) camp.sessionPrepTasksOnly = false;
+    if (!['manual', 'name', 'pinned'].includes(camp.entitySort)) camp.entitySort = 'manual';
+    if (camp.entityPinnedOnly === undefined) camp.entityPinnedOnly = false;
     if (!Array.isArray(camp.messages)) camp.messages = [];
+    if (!camp.relationshipUndo || typeof camp.relationshipUndo !== 'object') camp.relationshipUndo = {};
+    if (!Array.isArray(camp.undoStack)) camp.undoStack = [];
+    updateMessagesUnreadBadge();
+    updateUndoButtonState();
+    ensureAutoGrowTextareas(document);
+    ensureAccessibilityLabels(document);
   }
 
   /**
@@ -6498,6 +8857,54 @@
     renderModeScreenCampaigns();
   }
 
+  async function joinCampaignByInviteCode() {
+    if (!state.currentUser) {
+      showToast('Please login first.', 'warn');
+      return;
+    }
+    const codeRaw = await askPrompt('Enter invite code:', '', { title: 'Join Campaign', submitText: 'Join' });
+    const code = String(codeRaw || '').trim().toUpperCase();
+    if (!code) return;
+    const shared = loadSharedInvites();
+    const record = shared[code];
+    if (!record || !record.data || !record.data.entities || !record.data.relationships) {
+      showToast('Invite code not found.', 'warn');
+      return;
+    }
+    const existing = Object.values(state.campaigns).find((c) => String(c.sourceInviteCode || '').toUpperCase() === code);
+    let targetId = existing ? existing.id : generateId('camp');
+    if (existing) {
+      const replace = await askConfirm(
+        `You already joined "${existing.name}" with this code. Replace local copy with latest shared version?`,
+        'Update Joined Campaign'
+      );
+      if (!replace) targetId = generateId('camp');
+    }
+
+    const data = JSON.parse(JSON.stringify(record.data));
+    data.id = targetId;
+    data.sourceInviteCode = code;
+    if (!Array.isArray(data.memberUsers)) data.memberUsers = [];
+    if (!data.memberUsers.includes(state.currentUser)) data.memberUsers.push(state.currentUser);
+    if (!Array.isArray(data.gmUsers)) data.gmUsers = [];
+    if (!Array.isArray(data.undoStack)) data.undoStack = [];
+    state.campaigns[targetId] = data;
+    state.currentCampaignId = targetId;
+
+    // Update membership in shared record for owner visibility.
+    if (!Array.isArray(record.data.memberUsers)) record.data.memberUsers = [];
+    if (!record.data.memberUsers.includes(state.currentUser)) {
+      record.data.memberUsers.push(state.currentUser);
+      record.updatedAt = new Date().toISOString();
+      shared[code] = record;
+      saveSharedInvites(shared);
+    }
+
+    saveCampaigns();
+    renderModeScreenCampaigns();
+    showToast('Joined campaign via invite code.', 'info');
+  }
+
   /**
    * Set up mode screen event listeners.
    */
@@ -6538,6 +8945,10 @@
       saveCampaigns();
       renderModeScreenCampaigns();
     });
+    const joinBtn = document.getElementById('mode-join-code');
+    if (joinBtn) {
+      joinBtn.addEventListener('click', () => { void joinCampaignByInviteCode(); });
+    }
 
     // Import on mode screen
     document.getElementById('mode-import-btn').addEventListener('click', () => {
@@ -6573,6 +8984,10 @@
           data.name = data.name || 'Imported Campaign';
           data.owner = state.currentUser || null;
           data.gmUsers = state.currentUser ? [state.currentUser] : [];
+          data.memberUsers = state.currentUser ? [state.currentUser] : [];
+          data.inviteCode = '';
+          data.sourceInviteCode = '';
+          if (!Array.isArray(data.undoStack)) data.undoStack = [];
           state.campaigns[newId] = data;
           state.currentCampaignId = newId;
           saveCampaigns();

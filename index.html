@@ -60,6 +60,7 @@
           <div class="mode-campaign-row">
             <select id="mode-campaign-select"></select>
             <button id="mode-new-campaign" title="New Campaign"><span class="material-icons">add</span></button>
+            <button id="mode-join-code" title="Join via Invite Code"><span class="material-icons">group_add</span></button>
             <button id="mode-import-btn" title="Import Campaign"><span class="material-icons">file_download</span></button>
             <button id="mode-delete-campaign" title="Delete Campaign" class="mode-delete-btn"><span class="material-icons">delete</span></button>
             <input type="file" id="mode-import-input" accept="application/json" style="display:none">
@@ -88,7 +89,7 @@
       <!-- Top navigation bar -->
       <header id="top-nav">
         <div class="nav-left">
-          <button id="back-to-mode" class="nav-icon-btn" title="Back to mode selection">
+          <button id="back-to-mode" class="nav-icon-btn" title="Back to mode selection" aria-label="Back to mode selection">
             <span class="material-icons">arrow_back</span>
           </button>
           <div class="nav-brand">
@@ -114,16 +115,22 @@
           <button class="tab-link" data-tab="messages-view">
             <span class="material-icons tab-icon">forum</span>
             <span class="tab-label">Messages</span>
+            <span id="messages-unread-badge" class="tab-unread-badge hidden">0</span>
           </button>
         </div>
         <div class="nav-right">
-          <button id="save-btn" class="nav-icon-btn" title="Save (Ctrl+S)"><span class="material-icons">save</span></button>
-          <button id="dark-mode-btn" class="nav-icon-btn" title="Toggle dark mode"><span class="material-icons">dark_mode</span></button>
-          <button id="export-btn" class="nav-icon-btn" title="Export"><span class="material-icons">file_upload</span></button>
+          <span id="save-state-indicator" class="save-state-indicator" aria-live="polite">Saved</span>
+          <span id="sync-conflict-indicator" class="save-state-indicator state-error hidden" aria-live="polite">Updated in another tab</span>
+          <button id="sync-reload-btn" class="nav-icon-btn hidden" title="Reload latest from another tab" aria-label="Reload latest campaign from another tab"><span class="material-icons">sync</span></button>
+          <button id="undo-btn" class="nav-icon-btn" title="Undo last destructive action" aria-label="Undo last destructive action"><span class="material-icons">undo</span></button>
+          <button id="save-btn" class="nav-icon-btn" title="Save (Ctrl+S)" aria-label="Save campaign"><span class="material-icons">save</span></button>
+          <button id="shortcuts-btn" class="nav-icon-btn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts"><span class="material-icons">keyboard</span></button>
+          <button id="dark-mode-btn" class="nav-icon-btn" title="Toggle dark mode" aria-label="Toggle dark mode"><span class="material-icons">dark_mode</span></button>
+          <button id="export-btn" class="nav-icon-btn" title="Export" aria-label="Export campaign"><span class="material-icons">file_upload</span></button>
           <input type="file" id="import-input" accept="application/json" style="display:none">
-          <button id="import-btn" class="nav-icon-btn" title="Import"><span class="material-icons">file_download</span></button>
-          <button id="dice-btn" class="nav-icon-btn" title="Dice roller"><span class="material-icons">casino</span></button>
-          <button id="settings-btn" class="nav-icon-btn" title="Settings"><span class="material-icons">settings</span></button>
+          <button id="import-btn" class="nav-icon-btn" title="Import" aria-label="Import campaign"><span class="material-icons">file_download</span></button>
+          <button id="dice-btn" class="nav-icon-btn" title="Dice roller" aria-label="Open dice roller"><span class="material-icons">casino</span></button>
+          <button id="settings-btn" class="nav-icon-btn" title="Settings" aria-label="Open settings"><span class="material-icons">settings</span></button>
         </div>
       </header>
 
@@ -136,6 +143,18 @@
               <span class="material-icons search-icon">search</span>
               <input type="text" id="search-input" placeholder="Search entities…" title="Search (/)"/>
             </div>
+            <div class="sidebar-sort-row">
+              <label for="entity-sort-select">Sort</label>
+              <select id="entity-sort-select" title="Entity sort">
+                <option value="manual">Manual</option>
+                <option value="name">Name (A-Z)</option>
+                <option value="pinned">Pinned first</option>
+              </select>
+            </div>
+            <label class="sidebar-pin-only-row" for="entity-pin-only">
+              <input type="checkbox" id="entity-pin-only" />
+              <span>Pinned only</span>
+            </label>
             <div id="gm-add-buttons" class="add-buttons">
               <button id="add-pc-btn" class="add-btn add-btn-pc" title="Add PC">
                 <span class="material-icons">person_add</span>
@@ -195,7 +214,7 @@
           <div id="sheets-view" class="tab-page active">
             <div id="sheet-placeholder" class="placeholder">
               <span class="material-icons placeholder-icon">description</span>
-              <p>Select an entity from the sidebar to view its sheet.</p>
+              <p>Select an entity from the sidebar to view its sheet. Use ↑/↓ to move between entities.</p>
             </div>
             <div id="sheet-container" class="sheet-container" style="display:none"></div>
           </div>
@@ -231,6 +250,8 @@
               <span class="legend-item"><span class="legend-swatch" style="background:#f57f17"></span>Owes / Debt</span>
               <span class="legend-item"><span class="legend-swatch" style="background:#78909c"></span>Unknown/Unclear</span>
               <span class="legend-item"><span class="legend-swatch" style="background:#546e7a;border-top:2px dotted #546e7a;height:0"></span>Secret</span>
+              <span class="legend-semantic">Line style: dashed = hostile/tense, dotted = covert/surveillance, solid = standard. Thicker lines mean stronger ties. Lower opacity means lower certainty/awareness.</span>
+              <span id="web-rel-hint" class="legend-semantic">Tip: add relationships to show edges between entities.</span>
               <span style="margin-left:auto;color:var(--spire-dim);font-size:0.65rem">Double-click node → open sheet</span>
             </div>
             <div id="web-toolbar">
@@ -281,6 +302,9 @@
                 <select id="log-session-filter" title="Filter by session">
                   <option value="all">All sessions</option>
                 </select>
+                <button id="generate-recap-btn" class="toolbar-btn" title="Generate session recap">
+                  <span class="material-icons">summarize</span> Recap
+                </button>
                 <button id="new-session-btn" class="toolbar-btn" title="Start new session (resets core abilities)">
                   <span class="material-icons">play_circle</span> New Session
                 </button>
@@ -310,6 +334,15 @@
                 <span class="log-title">Table Messages</span>
                 <span id="messages-mode-badge" class="log-session-badge">Party</span>
               </div>
+              <select id="messages-filter-select" title="Filter messages">
+                <option value="all">All</option>
+                <option value="unread">Unread</option>
+                <option value="party">Party</option>
+                <option value="whispers">Whispers</option>
+              </select>
+              <button id="mark-messages-read-btn" class="toolbar-btn" title="Mark all visible as read">
+                <span class="material-icons">mark_email_read</span> Read
+              </button>
               <button id="clear-messages-btn" class="toolbar-btn toolbar-btn-danger" title="Clear Messages">
                 <span class="material-icons">delete</span> Clear
               </button>
