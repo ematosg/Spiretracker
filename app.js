@@ -3426,14 +3426,23 @@
 
   function createHideFromPlayersField(ent) {
     const wrapper = document.createElement('div');
-    wrapper.className = 'inspector-field';
+    wrapper.className = 'inspector-field hide-from-players-field';
     const label = document.createElement('label');
     label.textContent = 'Hide from players';
-    const checkbox = document.createElement('input');
-    checkbox.type = 'checkbox';
-    checkbox.checked = !!ent.gmOnly;
-    checkbox.addEventListener('change', (e) => {
-      ent.gmOnly = !!e.target.checked;
+    const toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    toggleBtn.className = 'refresh-toggle-btn hide-player-toggle-btn' + (ent.gmOnly ? ' active' : '');
+    const refreshToggleUi = () => {
+      toggleBtn.classList.toggle('active', !!ent.gmOnly);
+      toggleBtn.textContent = ent.gmOnly ? 'Hidden from players' : 'Visible to players';
+      toggleBtn.title = ent.gmOnly
+        ? 'This entity is hidden from player lists and web'
+        : 'This entity is visible to players';
+    };
+    refreshToggleUi();
+    toggleBtn.addEventListener('click', () => {
+      ent.gmOnly = !ent.gmOnly;
+      refreshToggleUi();
       appendLog(ent.gmOnly ? 'Hidden from players' : 'Visible to players', ent.id);
       saveAndRefresh();
     });
@@ -3442,7 +3451,7 @@
     hint.style.fontSize = '0.78rem';
     hint.textContent = 'Hidden entities are excluded from player lists and the player conspiracy web.';
     wrapper.appendChild(label);
-    wrapper.appendChild(checkbox);
+    wrapper.appendChild(toggleBtn);
     wrapper.appendChild(hint);
     return wrapper;
   }
