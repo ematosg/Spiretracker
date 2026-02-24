@@ -331,6 +331,7 @@ test('exportCampaign strips gm-only entities, secrets, and non-party messages fo
       { id: 'm1', target: 'party', text: 'hello' },
       { id: 'm2', target: 'gm', text: 'secret whisper' }
     ],
+    gmNotes: [{ id: 'n1', title: 'Secret', body: 'hidden' }],
     logs: [
       { action: 'Visible edit', target: 'a' },
       { action: 'Hidden entity edit', target: 'b' },
@@ -349,6 +350,7 @@ test('exportCampaign strips gm-only entities, secrets, and non-party messages fo
   assert.equal(!!playerSafe.relationships.r3, true);
   assert.equal(playerSafe.messages.length, 1);
   assert.equal(playerSafe.messages[0].target, 'party');
+  assert.deepEqual(playerSafe.gmNotes, []);
   assert.equal(playerSafe.logs.length, 1);
   assert.equal(playerSafe.logs[0].target, 'a');
 });

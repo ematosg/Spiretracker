@@ -819,6 +819,7 @@
       positions: {},
       logs: [],
       messages: [],
+      gmNotes: [],
       clocks: [],
       lastScenePrompt: null,
       scenarioPacks: [],
@@ -2353,6 +2354,14 @@
       const name = document.createElement('span');
       name.className = 'entity-name';
       name.textContent = entityLabel(ent) || '(Unnamed)';
+      name.addEventListener('dblclick', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        state.selectedRelId = null;
+        selectEntity(ent.id);
+        const sheetsTab = document.querySelector('.tab-link[data-tab="sheets-view"]');
+        if (sheetsTab) sheetsTab.click();
+      });
       li.appendChild(name);
 
       const meta = document.createElement('span');
@@ -2470,7 +2479,8 @@
   }
 
   function selectAdjacentTab(step = 1) {
-    const tabs = Array.from(document.querySelectorAll('.tab-link'));
+    const tabs = Array.from(document.querySelectorAll('.tab-link'))
+      .filter((btn) => btn && btn.offsetParent !== null);
     if (!tabs.length) return;
     const current = document.querySelector('.tab-link.active');
     const idx = Math.max(0, tabs.indexOf(current));
@@ -5897,7 +5907,8 @@
       sidebar: document.getElementById('sidebar')?.scrollTop || 0,
       logList: document.getElementById('log-list')?.scrollTop || 0,
       messagesList: document.getElementById('messages-list')?.scrollTop || 0,
-      prep: document.getElementById('session-prep-panel')?.scrollTop || 0
+      prep: document.getElementById('session-prep-panel')?.scrollTop || 0,
+      gmNotes: document.getElementById('gm-notes-board')?.scrollTop || 0
     };
     saveCampaigns();
     renderEntityLists();
@@ -5911,6 +5922,7 @@
     if (forceGraphRender || activeTab === 'web-view') updateGraph();
     if (forceMessagesRender || activeTab === 'messages-view') renderMessages();
     if (activeTab === 'log-view') renderLog();
+    if (activeTab === 'gm-notes-view') renderGMNotes();
     const sidebarAfter = document.getElementById('sidebar');
     if (sidebarAfter) sidebarAfter.scrollTop = preservedScrolls.sidebar;
     const logAfter = document.getElementById('log-list');
@@ -5919,6 +5931,8 @@
     if (msgAfter) msgAfter.scrollTop = preservedScrolls.messagesList;
     const prepAfter = document.getElementById('session-prep-panel');
     if (prepAfter) prepAfter.scrollTop = preservedScrolls.prep;
+    const gmNotesAfter = document.getElementById('gm-notes-board');
+    if (gmNotesAfter) gmNotesAfter.scrollTop = preservedScrolls.gmNotes;
     updatePendingBadge();
     updatePlayerPCButtonState();
     updateFocusToggleUI();
@@ -8626,6 +8640,258 @@
     updateUndoButtonState();
   }
 
+  const GM_NOTE_COLORS = ['#f6df8d', '#f7caa8', '#b8e3c7', '#b9d5f5', '#e7c6f2', '#f3b9bf'];
+
+  function ensureGmNotesStore(camp = currentCampaign()) {
+    if (!camp) return [];
+    if (!Array.isArray(camp.gmNotes)) camp.gmNotes = [];
+    camp.gmNotes.forEach((note) => {
+      if (!note.id) note.id = generateId('gmnote');
+      if (!note.title) note.title = '';
+      if (!note.body) note.body = '';
+      if (!note.scope) note.scope = 'session';
+      if (note.scope !== 'global' && note.scope !== 'session') note.scope = 'session';
+      if (note.scope === 'session') {
+        const fallbackSession = camp.currentSession || 1;
+        note.session = Number.isFinite(parseInt(note.session, 10)) ? parseInt(note.session, 10) : fallbackSession;
+      } else {
+        note.session = null;
+      }
+      if (note.pinned !== true) note.pinned = false;
+      if (!note.color) note.color = randomFrom(GM_NOTE_COLORS);
+      if (!note.updatedAt) note.updatedAt = new Date().toISOString();
+      if (!note.createdAt) note.createdAt = note.updatedAt;
+    });
+    return camp.gmNotes;
+  }
+
+  function createGmNote(camp, scope = 'session', sessionValue) {
+    const sessionNum = Number.isFinite(parseInt(sessionValue, 10))
+      ? parseInt(sessionValue, 10)
+      : (camp.currentSession || 1);
+    return {
+      id: generateId('gmnote'),
+      title: '',
+      body: '',
+      scope: scope === 'global' ? 'global' : 'session',
+      session: scope === 'global' ? null : sessionNum,
+      pinned: false,
+      color: randomFrom(GM_NOTE_COLORS),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+  }
+
+  function touchGmNote(note) {
+    note.updatedAt = new Date().toISOString();
+  }
+
+  function gmNotesBySession(camp) {
+    const notes = ensureGmNotesStore(camp);
+    const global = notes.filter((n) => n.scope === 'global');
+    const sessionMap = new Map();
+    const maxSession = Math.max(1, camp.currentSession || 1);
+    for (let i = 1; i <= maxSession; i += 1) sessionMap.set(i, []);
+    notes.forEach((n) => {
+      if (n.scope !== 'session') return;
+      const s = Number.isFinite(parseInt(n.session, 10)) ? parseInt(n.session, 10) : (camp.currentSession || 1);
+      if (!sessionMap.has(s)) sessionMap.set(s, []);
+      sessionMap.get(s).push(n);
+    });
+    const sortFn = (a, b) => {
+      if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+      const at = new Date(a.updatedAt || a.createdAt || 0).getTime();
+      const bt = new Date(b.updatedAt || b.createdAt || 0).getTime();
+      return bt - at;
+    };
+    global.sort(sortFn);
+    sessionMap.forEach((arr) => arr.sort(sortFn));
+    return { global, sessionMap };
+  }
+
+  function createGmNoteCard(camp, note, options = {}) {
+    const card = document.createElement('article');
+    card.className = 'gm-note-card';
+    card.style.setProperty('--note-color', note.color || randomFrom(GM_NOTE_COLORS));
+
+    const titleInput = document.createElement('input');
+    titleInput.type = 'text';
+    titleInput.placeholder = 'Title';
+    titleInput.value = note.title || '';
+    titleInput.className = 'gm-note-title';
+    titleInput.addEventListener('input', (e) => {
+      note.title = e.target.value;
+      touchGmNote(note);
+      queueDeferredSave(`gm-note-title:${note.id}`);
+    });
+    titleInput.addEventListener('change', (e) => {
+      note.title = e.target.value;
+      touchGmNote(note);
+      appendLog('Edited GM note', '');
+      saveWithoutRefresh();
+    });
+    card.appendChild(titleInput);
+
+    const bodyInput = document.createElement('textarea');
+    bodyInput.placeholder = 'Write note...';
+    bodyInput.value = note.body || '';
+    bodyInput.className = 'gm-note-body';
+    bodyInput.addEventListener('input', (e) => {
+      note.body = e.target.value;
+      touchGmNote(note);
+      queueDeferredSave(`gm-note-body:${note.id}`);
+    });
+    bodyInput.addEventListener('change', (e) => {
+      note.body = e.target.value;
+      touchGmNote(note);
+      appendLog('Edited GM note', '');
+      saveWithoutRefresh();
+    });
+    card.appendChild(bodyInput);
+
+    const footer = document.createElement('div');
+    footer.className = 'gm-note-footer';
+
+    const pinBtn = document.createElement('button');
+    pinBtn.className = 'toolbar-btn';
+    pinBtn.textContent = note.pinned ? 'Unpin' : 'Pin';
+    pinBtn.addEventListener('click', () => {
+      note.pinned = !note.pinned;
+      touchGmNote(note);
+      appendLog(note.pinned ? 'Pinned GM note' : 'Unpinned GM note', '');
+      saveAndRefresh();
+    });
+    footer.appendChild(pinBtn);
+
+    const scopeBtn = document.createElement('button');
+    scopeBtn.className = 'toolbar-btn';
+    if (note.scope === 'global') {
+      scopeBtn.textContent = `Move to Session ${camp.currentSession || 1}`;
+      scopeBtn.title = 'Move this note inside the current session folder';
+    } else {
+      scopeBtn.textContent = 'Pin Outside Session';
+      scopeBtn.title = 'Move this note to the outside-session container';
+    }
+    scopeBtn.addEventListener('click', () => {
+      if (note.scope === 'global') {
+        note.scope = 'session';
+        note.session = camp.currentSession || 1;
+      } else {
+        note.scope = 'global';
+        note.session = null;
+      }
+      touchGmNote(note);
+      appendLog('Moved GM note', '');
+      saveAndRefresh();
+    });
+    footer.appendChild(scopeBtn);
+
+    if (note.scope === 'session') {
+      const sessSel = document.createElement('select');
+      const maxSession = Math.max(1, camp.currentSession || 1);
+      for (let s = 1; s <= maxSession; s += 1) {
+        const opt = document.createElement('option');
+        opt.value = String(s);
+        opt.textContent = `S${s}`;
+        if (s === Number(note.session || 1)) opt.selected = true;
+        sessSel.appendChild(opt);
+      }
+      sessSel.addEventListener('change', (e) => {
+        note.session = parseInt(e.target.value, 10) || (camp.currentSession || 1);
+        touchGmNote(note);
+        appendLog('Moved GM note', '');
+        saveAndRefresh();
+      });
+      footer.appendChild(sessSel);
+    }
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'row-remove-btn';
+    delBtn.textContent = '×';
+    delBtn.title = 'Delete note';
+    delBtn.addEventListener('click', async () => {
+      const ok = await askConfirm('Delete this GM note?', 'Delete GM Note');
+      if (!ok) return;
+      camp.gmNotes = ensureGmNotesStore(camp).filter((n) => n.id !== note.id);
+      appendLog('Deleted GM note', '');
+      saveAndRefresh();
+    });
+    footer.appendChild(delBtn);
+    card.appendChild(footer);
+
+    const updated = document.createElement('div');
+    updated.className = 'gm-note-updated';
+    updated.textContent = `Updated ${new Date(note.updatedAt || note.createdAt || Date.now()).toLocaleString()}`;
+    card.appendChild(updated);
+    return card;
+  }
+
+  function renderGMNotes() {
+    const board = document.getElementById('gm-notes-board');
+    if (!board) return;
+    const page = document.getElementById('gm-notes-view');
+    if (!state.gmMode) {
+      if (page) page.classList.remove('active');
+      board.innerHTML = '<div class="messages-empty">GM Notes are visible to GMs only.</div>';
+      return;
+    }
+    const camp = currentCampaign();
+    const notes = ensureGmNotesStore(camp);
+    const grouped = gmNotesBySession(camp);
+    board.innerHTML = '';
+
+    const outsideSection = document.createElement('section');
+    outsideSection.className = 'gm-notes-section';
+    outsideSection.innerHTML = '<h3>Outside Session</h3>';
+    const outsideGrid = document.createElement('div');
+    outsideGrid.className = 'gm-note-grid';
+    if (!grouped.global.length) {
+      const empty = document.createElement('p');
+      empty.className = 'text-muted';
+      empty.textContent = 'No outside-session notes.';
+      outsideGrid.appendChild(empty);
+    } else {
+      grouped.global.forEach((note) => outsideGrid.appendChild(createGmNoteCard(camp, note)));
+    }
+    outsideSection.appendChild(outsideGrid);
+    board.appendChild(outsideSection);
+
+    const sessions = Array.from(grouped.sessionMap.keys()).sort((a, b) => a - b);
+    sessions.forEach((sessionNum) => {
+      const folder = document.createElement('details');
+      folder.className = 'gm-session-folder';
+      if (sessionNum === (camp.currentSession || 1)) folder.open = true;
+      const summary = document.createElement('summary');
+      const count = grouped.sessionMap.get(sessionNum)?.length || 0;
+      summary.textContent = `Session ${sessionNum} (${count})`;
+      folder.appendChild(summary);
+
+      const grid = document.createElement('div');
+      grid.className = 'gm-note-grid';
+      const notesInSession = grouped.sessionMap.get(sessionNum) || [];
+      if (!notesInSession.length) {
+        const empty = document.createElement('p');
+        empty.className = 'text-muted';
+        empty.textContent = 'No notes in this session folder.';
+        grid.appendChild(empty);
+      } else {
+        notesInSession.forEach((note) => grid.appendChild(createGmNoteCard(camp, note)));
+      }
+      const addBtn = document.createElement('button');
+      addBtn.className = 'toolbar-btn';
+      addBtn.textContent = `Add Note to Session ${sessionNum}`;
+      addBtn.addEventListener('click', () => {
+        notes.push(createGmNote(camp, 'session', sessionNum));
+        appendLog('Added GM note', '');
+        saveAndRefresh();
+      });
+      grid.appendChild(addBtn);
+      folder.appendChild(grid);
+      board.appendChild(folder);
+    });
+    ensureAutoGrowTextareas(board);
+  }
+
   /**
    * Perform a JSON export of the current campaign. If gmExport is
    * false, strip GM-only entities, secret edges and GM notes.
@@ -8659,6 +8925,7 @@
       if (Array.isArray(camp.messages)) {
         camp.messages = camp.messages.filter(m => (m.target || 'party') === 'party');
       }
+      camp.gmNotes = [];
       if (Array.isArray(camp.logs)) {
         camp.logs = camp.logs.filter((entry) => {
           if (!entry || !entry.target) return true;
@@ -8778,6 +9045,7 @@
       data.inviteCode = '';
       data.sourceInviteCode = '';
       if (!Array.isArray(data.messages)) data.messages = [];
+      if (!Array.isArray(data.gmNotes)) data.gmNotes = [];
       if (!Array.isArray(data.clocks)) data.clocks = [];
       if (!Array.isArray(data.undoStack)) data.undoStack = [];
       if (!Array.isArray(data.redoStack)) data.redoStack = [];
@@ -10893,6 +11161,26 @@
         saveAndRefresh();
       });
     }
+    const gmAddSessionNoteBtn = document.getElementById('gm-add-session-note-btn');
+    if (gmAddSessionNoteBtn) {
+      gmAddSessionNoteBtn.addEventListener('click', () => {
+        if (!state.gmMode) return;
+        const camp = currentCampaign();
+        ensureGmNotesStore(camp).push(createGmNote(camp, 'session', camp.currentSession || 1));
+        appendLog('Added GM note', '');
+        saveAndRefresh();
+      });
+    }
+    const gmAddGlobalNoteBtn = document.getElementById('gm-add-global-note-btn');
+    if (gmAddGlobalNoteBtn) {
+      gmAddGlobalNoteBtn.addEventListener('click', () => {
+        if (!state.gmMode) return;
+        const camp = currentCampaign();
+        ensureGmNotesStore(camp).push(createGmNote(camp, 'global'));
+        appendLog('Added GM note', '');
+        saveAndRefresh();
+      });
+    }
     // Close inspector
     document.getElementById('close-inspector').addEventListener('click', () => {
       state.selectedRelId = null;
@@ -10959,6 +11247,9 @@
         if (target === 'messages-view') {
           renderMessages();
         }
+        if (target === 'gm-notes-view') {
+          renderGMNotes();
+        }
         // Auto-dismiss inspector when leaving web view
         if (target !== 'web-view') {
           document.getElementById('inspector').classList.add('hidden');
@@ -11021,6 +11312,7 @@
     updateGraph();
     renderLog();
     renderMessages();
+    renderGMNotes();
     renderSessionPrep();
     updatePendingBadge();
     updatePlayerPCButtonState();
@@ -11054,6 +11346,7 @@
     if (!['manual', 'name', 'pinned'].includes(camp.entitySort)) camp.entitySort = 'manual';
     if (camp.entityPinnedOnly === undefined) camp.entityPinnedOnly = false;
     if (!Array.isArray(camp.messages)) camp.messages = [];
+    if (!Array.isArray(camp.gmNotes)) camp.gmNotes = [];
     if (camp.lastScenePrompt === undefined) camp.lastScenePrompt = null;
     if (!Array.isArray(camp.scenarioPacks)) camp.scenarioPacks = [];
     if (!camp.uiTipsDismissed || typeof camp.uiTipsDismissed !== 'object') camp.uiTipsDismissed = {};
@@ -11092,12 +11385,20 @@
     document.documentElement.style.setProperty('--accent-glow',
       state.gmMode ? 'var(--gm-glow)' : 'var(--pl-glow)');
     const filterBar = document.getElementById('web-filter-bar');
+    const gmNotesTab = document.querySelector('.tab-link[data-tab="gm-notes-view"]');
+    const gmNotesPage = document.getElementById('gm-notes-view');
     // Keep GM-only filter controls hidden for players, but allow players
     // to access the web tab itself (player-safe filtering already applies).
     if (!state.gmMode) {
       if (filterBar) filterBar.style.display = 'none';
+      if (gmNotesTab) gmNotesTab.style.display = 'none';
+      if (gmNotesPage && gmNotesPage.classList.contains('active')) {
+        const sheetsTab = document.querySelector('.tab-link[data-tab="sheets-view"]');
+        if (sheetsTab) sheetsTab.click();
+      }
     } else {
       if (filterBar) filterBar.style.display = '';
+      if (gmNotesTab) gmNotesTab.style.display = '';
     }
     updatePlayerPCButtonState();
     updateFocusToggleUI();
@@ -11479,6 +11780,7 @@
           data.sourceInviteCode = '';
           if (!Array.isArray(data.undoStack)) data.undoStack = [];
           if (!Array.isArray(data.redoStack)) data.redoStack = [];
+          if (!Array.isArray(data.gmNotes)) data.gmNotes = [];
           state.campaigns[newId] = data;
           state.currentCampaignId = newId;
           saveCampaigns();

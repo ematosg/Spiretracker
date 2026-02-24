@@ -117,6 +117,10 @@
             <span class="tab-label">Messages</span>
             <span id="messages-unread-badge" class="tab-unread-badge hidden">0</span>
           </button>
+          <button class="tab-link gm-only-tab" data-tab="gm-notes-view">
+            <span class="material-icons tab-icon">sticky_note_2</span>
+            <span class="tab-label">GM Notes</span>
+          </button>
         </div>
         <div class="nav-right">
           <span id="save-state-indicator" class="save-state-indicator" aria-live="polite">Saved</span>
@@ -380,6 +384,22 @@
                 <span class="material-icons">send</span>
               </button>
             </div>
+          </div>
+
+          <!-- GM Notes view -->
+          <div id="gm-notes-view" class="tab-page">
+            <div id="gm-notes-toolbar">
+              <span class="log-title">GM Notes</span>
+              <div class="gm-notes-toolbar-right">
+                <button id="gm-add-session-note-btn" class="toolbar-btn" title="Add note to current session">
+                  <span class="material-icons">note_add</span> Session Note
+                </button>
+                <button id="gm-add-global-note-btn" class="toolbar-btn" title="Add note outside sessions">
+                  <span class="material-icons">push_pin</span> Outside Session
+                </button>
+              </div>
+            </div>
+            <div id="gm-notes-board" class="gm-notes-board"></div>
           </div>
         </main>
 

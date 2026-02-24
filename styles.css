@@ -1710,6 +1710,120 @@ textarea.auto-grow {
   flex-direction: column;
 }
 
+#gm-notes-view {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+#gm-notes-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--spire-border);
+  background: var(--spire-dark);
+  flex-shrink: 0;
+}
+
+.gm-notes-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.gm-notes-board {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.gm-notes-section h3 {
+  margin: 0 0 8px;
+  font-family: 'Cinzel', serif;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 0.78rem;
+  color: var(--spire-muted);
+}
+
+.gm-session-folder {
+  border: 1px solid var(--spire-border);
+  border-radius: var(--radius);
+  background: var(--spire-dark);
+  padding: 8px;
+}
+
+.gm-session-folder summary {
+  cursor: pointer;
+  font-family: 'Cinzel', serif;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-hi);
+  padding: 4px 2px;
+}
+
+.gm-note-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.gm-note-card {
+  border: 1px solid rgba(0,0,0,0.18);
+  border-radius: 10px;
+  background: linear-gradient(165deg, color-mix(in srgb, var(--note-color) 84%, #fff 16%), color-mix(in srgb, var(--note-color) 74%, #111 26%));
+  color: #2a1f13;
+  padding: 10px;
+  box-shadow: 0 6px 16px rgba(0,0,0,0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 190px;
+}
+
+.gm-note-title,
+.gm-note-body {
+  border: 1px solid rgba(70,50,35,0.24);
+  background: rgba(255,255,255,0.34);
+  color: #2a1f13;
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: 'Crimson Pro', serif;
+}
+
+.gm-note-title {
+  font-weight: 700;
+  font-size: 0.95rem;
+  min-height: 36px;
+}
+
+.gm-note-body {
+  min-height: 102px;
+  resize: vertical;
+}
+
+.gm-note-footer {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.gm-note-updated {
+  font-size: 0.68rem;
+  color: rgba(36,25,14,0.72);
+  font-family: 'Cinzel', serif;
+  letter-spacing: 0.04em;
+}
+
 #messages-toolbar {
   display: flex;
   align-items: center;
@@ -2107,6 +2221,7 @@ body.player-mode #gm-add-buttons { display: none; }
 body.player-mode #player-add-buttons { display: flex; }
 body.gm-mode #player-add-buttons { display: none; }
 #player-add-buttons { display: none; }
+body.player-mode .gm-only-tab { display: none !important; }
 
 /* Disabled "My Character" button when a PC already exists */
 #player-add-pc-btn:disabled {
@@ -3577,7 +3692,8 @@ a:focus-visible {
   }
   #web-toolbar,
   #messages-toolbar,
-  #log-toolbar {
+  #log-toolbar,
+  #gm-notes-toolbar {
     flex-wrap: wrap;
     gap: 8px;
   }
@@ -3585,7 +3701,8 @@ a:focus-visible {
   .web-toolbar-right,
   .log-toolbar-left,
   .log-toolbar-right,
-  .messages-title-wrap {
+  .messages-title-wrap,
+  .gm-notes-toolbar-right {
     width: 100%;
   }
   .log-toolbar-right {
@@ -3614,6 +3731,9 @@ a:focus-visible {
     width: 100%;
     max-width: 100%;
     min-height: 40px;
+  }
+  .gm-note-grid {
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
   }
 }
 
@@ -3704,6 +3824,15 @@ a:focus-visible {
   .task-controls-row button {
     width: 100%;
     min-height: 38px;
+  }
+  .gm-notes-board {
+    padding: 10px;
+  }
+  .gm-note-grid {
+    grid-template-columns: 1fr;
+  }
+  .gm-note-card {
+    min-height: 170px;
   }
 }
 
