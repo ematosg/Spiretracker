@@ -1846,7 +1846,9 @@
     title.className = 'sheet-title';
     const name = escapeHtml(entityLabel(pc));
     const classSuffix = pc.class ? ` <span class="sheet-class-suffix">— ${escapeHtml(pc.class)}</span>` : '';
-    title.innerHTML = `<h2>${name}${classSuffix}</h2>`;
+    const isMyCharacter = !state.gmMode && currentCampaign().playerOwnedPcId === pc.id;
+    const myTag = isMyCharacter ? ' <span class="sheet-class-suffix" style="margin-left:8px;color:var(--pl-accent-hi)">My Character</span>' : '';
+    title.innerHTML = `<h2>${name}${classSuffix}${myTag}</h2>`;
     const titleBtns = document.createElement('div');
     titleBtns.style.display = 'flex';
     titleBtns.style.gap = '6px';
