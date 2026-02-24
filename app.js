@@ -2960,6 +2960,9 @@
       f.appendChild(inp);
       identity.appendChild(f);
     });
+    if (state.gmMode) {
+      identity.appendChild(createHideFromPlayersField(npc));
+    }
 
     container.appendChild(identity);
 
@@ -3237,6 +3240,9 @@
     });
     minRelField.appendChild(minRelSel);
     identitySec.appendChild(minRelField);
+    if (state.gmMode) {
+      identitySec.appendChild(createHideFromPlayersField(org));
+    }
 
     container.appendChild(identitySec);
 
@@ -3413,6 +3419,29 @@
       else saveWithoutRefresh();
     });
     wrapper.appendChild(input);
+    return wrapper;
+  }
+
+  function createHideFromPlayersField(ent) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'inspector-field';
+    const label = document.createElement('label');
+    label.textContent = 'Hide from players';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = !!ent.gmOnly;
+    checkbox.addEventListener('change', (e) => {
+      ent.gmOnly = !!e.target.checked;
+      appendLog(ent.gmOnly ? 'Hidden from players' : 'Visible to players', ent.id);
+      saveAndRefresh();
+    });
+    const hint = document.createElement('small');
+    hint.className = 'text-muted';
+    hint.style.fontSize = '0.78rem';
+    hint.textContent = 'Hidden entities are excluded from player lists and the player conspiracy web.';
+    wrapper.appendChild(label);
+    wrapper.appendChild(checkbox);
+    wrapper.appendChild(hint);
     return wrapper;
   }
 
