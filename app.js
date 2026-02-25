@@ -753,7 +753,24 @@
     },
     totalStressForFallout(pc) {
       const tracks = ['blood', 'mind', 'silver', 'shadow', 'reputation'];
-      return tracks.reduce((sum, t) => sum + Math.min(10, ((pc.stressFilled && pc.stressFilled[t]) ? pc.stressFilled[t].length : 0)), 0);
+      return tracks.reduce((sum, t) => {
+        const filled = (pc.stressFilled && pc.stressFilled[t]) ? pc.stressFilled[t].length : 0;
+        let free = 0;
+        if (Array.isArray(pc.resistances)) {
+          pc.resistances.forEach((r) => {
+            if (!r || !r.name) return;
+            if (String(r.name).toLowerCase() !== t) return;
+            free += Math.max(0, parseInt(r.value, 10) || 0);
+          });
+        }
+        if (t === 'blood' && Array.isArray(pc.inventory)) {
+          pc.inventory.forEach((item) => {
+            if (!item || item.type !== 'armor') return;
+            free += Math.max(0, parseInt(item.resistance, 10) || 0);
+          });
+        }
+        return sum + Math.min(10, Math.max(0, filled - free));
+      }, 0);
     },
     falloutSeverityForTotalStress(total) {
       if (total >= 9) return 'Severe';
@@ -962,7 +979,7 @@
       const track = normalizeStressTrack(opts.track);
       const amount = Math.max(1, Math.min(10, parseInt(opts.amount, 10) || 1));
       const current = (target.stressFilled && target.stressFilled[track]) ? target.stressFilled[track].length : 0;
-      const maxSlots = (target.stressSlots && target.stressSlots[track]) ? target.stressSlots[track] : 10;
+      const maxSlots = getTrackTotalSlots(target, track);
       setPCStressLevel(target, track, Math.min(maxSlots, current + amount), { triggerFallout: true });
       appendLog('Applied social consequence stress', target.id);
       return true;
@@ -2261,7 +2278,7 @@
         const tracks = ['blood','mind','silver','shadow','reputation'];
         const stressed = tracks.filter(t => ent.stressFilled && ent.stressFilled[t] && ent.stressFilled[t].length > 0);
         if (stressed.length) {
-          lines.push('Stress: ' + stressed.map(t => t.charAt(0).toUpperCase() + ':' + ent.stressFilled[t].length + '/' + (ent.stressSlots ? ent.stressSlots[t] : 10)).join(' '));
+          lines.push('Stress: ' + stressed.map(t => t.charAt(0).toUpperCase() + ':' + ent.stressFilled[t].length + '/' + getTrackTotalSlots(ent, t)).join(' '));
         }
         if (ent.fallout && ent.fallout.filter(f => !f.resolved).length > 0)
           lines.push(ent.fallout.filter(f => !f.resolved).length + ' active fallout');
@@ -2831,7 +2848,9 @@
     }
 
     ['blood','mind','silver','shadow','reputation'].forEach(track => {
-      const slots = pc.stressSlots[track] || 10;
+      const baseSlots = getTrackBaseSlots(pc, track);
+      const freeSlots = getTrackFreeSlots(pc, track);
+      const slots = getTrackTotalSlots(pc, track);
       const filled = pc.stressFilled[track] || [];
 
       const row = document.createElement('div');
@@ -2851,24 +2870,24 @@
       minusBtn.textContent = '−';
       minusBtn.title = 'Remove stress slot';
       minusBtn.addEventListener('click', () => {
-        if (pc.stressSlots[track] <= 1) return;
+        if (getTrackBaseSlots(pc, track) <= 1) return;
         pc.stressSlots[track]--;
         // Truncate stress to new cap without triggering fallout.
         const current = (pc.stressFilled[track] || []).length;
-        setPCStressLevel(pc, track, Math.min(current, pc.stressSlots[track]), { triggerFallout: false });
+        setPCStressLevel(pc, track, Math.min(current, getTrackTotalSlots(pc, track)), { triggerFallout: false });
         appendLog(`Reduced ${track} stress slots`, pc.id);
         saveAndRefresh();
       });
 
       const slotCount = document.createElement('span');
       slotCount.className = 'stress-slot-count';
-      slotCount.textContent = slots;
+      slotCount.textContent = freeSlots > 0 ? `${baseSlots} +${freeSlots} free` : String(baseSlots);
 
       const plusBtn = document.createElement('button');
       plusBtn.textContent = '+';
       plusBtn.title = 'Add stress slot';
       plusBtn.addEventListener('click', () => {
-        if (pc.stressSlots[track] >= 20) return;
+        if (getTrackBaseSlots(pc, track) >= 20) return;
         pc.stressSlots[track]++;
         appendLog(`Increased ${track} stress slots`, pc.id);
         saveAndRefresh();
@@ -2882,7 +2901,10 @@
       // Numeric stress counter
       const stressCounter = document.createElement('span');
       stressCounter.className = 'stress-num-counter';
-      stressCounter.textContent = filled.length + '/' + slots;
+      const counted = getTrackFalloutCountedStress(pc, track);
+      stressCounter.textContent = freeSlots > 0
+        ? `${filled.length}/${slots} (${counted} counted)`
+        : `${filled.length}/${slots}`;
       row.appendChild(stressCounter);
 
       // Pips — sequential fill
@@ -2983,7 +3005,7 @@
       nameSpan.textContent = r.name;
       const valBadge = document.createElement('span');
       valBadge.className = 'res-value-badge';
-      valBadge.textContent = '+' + (r.value || 0);
+      valBadge.textContent = '+' + (r.value || 0) + ' free';
       const rollBtn = document.createElement('button');
       rollBtn.className = 'res-roll-btn';
       rollBtn.textContent = 'Roll';
@@ -2994,7 +3016,7 @@
       // Stress bar for this track
       const track = r.name.toLowerCase();
       const trackData = pc.stressFilled[track];
-      const trackSlots = pc.stressSlots ? pc.stressSlots[track] : 10;
+      const trackSlots = getTrackTotalSlots(pc, track);
       if (trackData !== undefined && trackSlots) {
         const stressBar = document.createElement('div');
         stressBar.className = 'res-stress-mini-bar';
@@ -3236,8 +3258,15 @@
         appendLog(pc.refreshed ? 'Marked as refreshed' : 'Cleared refresh', pc.id);
         saveAndRefresh();
       });
+      const refreshApplyBtn = document.createElement('button');
+      refreshApplyBtn.className = 'toolbar-btn';
+      refreshApplyBtn.textContent = 'Apply Refresh (D3/D6/D8)';
+      refreshApplyBtn.title = 'Roll D3/D6/D8 and clear stress per refresh rules';
+      refreshApplyBtn.disabled = !canEditPC;
+      refreshApplyBtn.addEventListener('click', () => openRefreshStressModal(pc));
       refreshDiv.appendChild(refreshLabel);
       refreshDiv.appendChild(refreshChk);
+      refreshDiv.appendChild(refreshApplyBtn);
       classBody.appendChild(refreshDiv);
       // Bond prompts and responses
       if (classEff.bondPrompts && classEff.bondPrompts.length) {
@@ -4545,6 +4574,137 @@
     }, 0);
   }
 
+  function getTrackBaseSlots(pc, track) {
+    if (!pc || !pc.stressSlots) return 10;
+    return Math.max(1, parseInt(pc.stressSlots[track], 10) || 10);
+  }
+
+  function getTrackFreeSlots(pc, track) {
+    if (!pc || !track) return 0;
+    const key = String(track).toLowerCase();
+    let free = 0;
+    if (Array.isArray(pc.resistances)) {
+      pc.resistances.forEach((r) => {
+        if (!r || !r.name) return;
+        if (String(r.name).toLowerCase() !== key) return;
+        free += Math.max(0, parseInt(r.value, 10) || 0);
+      });
+    }
+    if (key === 'blood') free += totalArmorResistance(pc);
+    return Math.max(0, free);
+  }
+
+  function getTrackTotalSlots(pc, track) {
+    return getTrackBaseSlots(pc, track) + getTrackFreeSlots(pc, track);
+  }
+
+  function getTrackFalloutCountedStress(pc, track) {
+    const filled = (pc && pc.stressFilled && pc.stressFilled[track]) ? pc.stressFilled[track].length : 0;
+    const free = getTrackFreeSlots(pc, track);
+    return Math.min(10, Math.max(0, filled - free));
+  }
+
+  function openRefreshStressModal(pc) {
+    const overlay = document.getElementById('modal-overlay');
+    const modal = document.getElementById('modal');
+    const content = document.getElementById('modal-content');
+    const titleEl = document.getElementById('modal-title');
+    if (titleEl) titleEl.textContent = 'Apply Refresh Stress Removal';
+    content.innerHTML = '';
+
+    const form = document.createElement('div');
+    form.className = 'modal-form';
+
+    const intro = document.createElement('p');
+    intro.className = 'text-muted';
+    intro.style.margin = '0 0 10px';
+    intro.textContent = 'Roll D3, D6, or D8 based on how fully the refresh condition was met.';
+    form.appendChild(intro);
+
+    const trackField = document.createElement('div');
+    trackField.className = 'modal-field';
+    const trackLabel = document.createElement('label');
+    trackLabel.textContent = 'Clear From';
+    const trackSel = document.createElement('select');
+    const autoOpt = document.createElement('option');
+    autoOpt.value = '__auto__';
+    autoOpt.textContent = 'Highest Stress Track';
+    trackSel.appendChild(autoOpt);
+    ['blood', 'mind', 'silver', 'shadow', 'reputation'].forEach((t) => {
+      const opt = document.createElement('option');
+      opt.value = t;
+      opt.textContent = t.charAt(0).toUpperCase() + t.slice(1);
+      trackSel.appendChild(opt);
+    });
+    trackField.appendChild(trackLabel);
+    trackField.appendChild(trackSel);
+    form.appendChild(trackField);
+
+    const actions = document.createElement('div');
+    actions.style.display = 'flex';
+    actions.style.gap = '8px';
+    actions.style.flexWrap = 'wrap';
+    actions.style.marginTop = '10px';
+
+    function resolveTrack() {
+      if (trackSel.value !== '__auto__') return trackSel.value;
+      const tracks = ['blood', 'mind', 'silver', 'shadow', 'reputation'];
+      let best = null;
+      let bestVal = -1;
+      tracks.forEach((t) => {
+        const v = (pc.stressFilled && pc.stressFilled[t]) ? pc.stressFilled[t].length : 0;
+        if (v > bestVal) {
+          bestVal = v;
+          best = t;
+        }
+      });
+      return best;
+    }
+
+    function applyRefreshRoll(sides) {
+      const targetTrack = resolveTrack();
+      if (!targetTrack) {
+        showToast('No stress tracks available to clear.', 'warn');
+        return;
+      }
+      const current = (pc.stressFilled && pc.stressFilled[targetTrack]) ? pc.stressFilled[targetTrack].length : 0;
+      if (current <= 0) {
+        showToast('Selected track has no stress to clear.', 'warn');
+        return;
+      }
+      const rolled = Math.ceil(Math.random() * sides);
+      const next = Math.max(0, current - rolled);
+      const removed = current - next;
+      setPCStressLevel(pc, targetTrack, next, { triggerFallout: false });
+      pc.refreshed = true;
+      appendLog(`Applied refresh: cleared ${removed} ${targetTrack} stress (D${sides}=${rolled})`, pc.id);
+      closeModal();
+      saveAndRefresh();
+    }
+
+    [
+      { sides: 3, label: 'Roll D3' },
+      { sides: 6, label: 'Roll D6' },
+      { sides: 8, label: 'Roll D8' }
+    ].forEach((die) => {
+      const btn = document.createElement('button');
+      btn.className = 'modal-submit';
+      btn.textContent = die.label;
+      btn.addEventListener('click', () => applyRefreshRoll(die.sides));
+      actions.appendChild(btn);
+    });
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.addEventListener('click', () => closeModal());
+    actions.appendChild(cancelBtn);
+
+    form.appendChild(actions);
+    content.appendChild(form);
+    overlay.classList.remove('hidden');
+    modal.classList.remove('hidden');
+  }
+
   function openStressApplicationModal(pc) {
     const overlay = document.getElementById('modal-overlay');
     const modal = document.getElementById('modal');
@@ -4598,28 +4758,12 @@
     amountField.appendChild(amountInput);
     form.appendChild(amountField);
 
-    const armorField = document.createElement('div');
-    armorField.className = 'modal-field modal-field-inline';
-    const armorChk = document.createElement('input');
-    armorChk.type = 'checkbox';
-    armorChk.checked = true;
-    const armorLabel = document.createElement('label');
-    armorLabel.textContent = 'Apply armor reduction automatically';
-    armorField.appendChild(armorChk);
-    armorField.appendChild(armorLabel);
-    form.appendChild(armorField);
-
-    const armorValueField = document.createElement('div');
-    armorValueField.className = 'modal-field';
-    const armorValueLabel = document.createElement('label');
-    armorValueLabel.textContent = 'Armor Reduction';
-    const armorValueInput = document.createElement('input');
-    armorValueInput.type = 'number';
-    armorValueInput.min = '0';
-    armorValueInput.value = String(totalArmorResistance(pc));
-    armorValueField.appendChild(armorValueLabel);
-    armorValueField.appendChild(armorValueInput);
-    form.appendChild(armorValueField);
+    const armorHint = document.createElement('div');
+    armorHint.className = 'text-muted';
+    armorHint.style.fontSize = '0.82rem';
+    armorHint.style.marginTop = '-4px';
+    armorHint.textContent = `Armor grants ${totalArmorResistance(pc)} free Blood slot(s); it does not directly reduce incoming stress.`;
+    form.appendChild(armorHint);
 
     const preview = document.createElement('div');
     preview.className = 'text-muted';
@@ -4629,11 +4773,9 @@
 
     function refreshPreview() {
       const incoming = Math.max(0, parseInt(amountInput.value, 10) || 0);
-      const armor = armorChk.checked ? Math.max(0, parseInt(armorValueInput.value, 10) || 0) : 0;
-      const applied = Math.max(0, incoming - armor);
-      preview.textContent = `Applied stress: ${applied} (incoming ${incoming}${armorChk.checked ? ` - armor ${armor}` : ''})`;
+      preview.textContent = `Applied stress: ${incoming}`;
     }
-    [amountInput, armorValueInput, armorChk].forEach((el) => {
+    [amountInput].forEach((el) => {
       el.addEventListener('input', refreshPreview);
       el.addEventListener('change', refreshPreview);
     });
@@ -4655,11 +4797,9 @@
     applyBtn.addEventListener('click', () => {
       const track = trackSel.value;
       const incoming = Math.max(0, parseInt(amountInput.value, 10) || 0);
-      const armor = armorChk.checked ? Math.max(0, parseInt(armorValueInput.value, 10) || 0) : 0;
-      const applied = Math.max(0, incoming - armor);
       const current = (pc.stressFilled && pc.stressFilled[track]) ? pc.stressFilled[track].length : 0;
-      setPCStressLevel(pc, track, current + applied);
-      appendLog(`Applied ${applied} ${track} stress from ${sourceSel.value}${armorChk.checked ? ` (armor ${armor})` : ''}`, pc.id);
+      setPCStressLevel(pc, track, current + incoming);
+      appendLog(`Applied ${incoming} ${track} stress from ${sourceSel.value}`, pc.id);
       closeModal();
       saveAndRefresh();
     });
@@ -5828,7 +5968,25 @@
   }
 
   function totalStressForFallout(pc) {
-    return RulesEngine.totalStressForFallout(pc);
+    const tracks = ['blood', 'mind', 'silver', 'shadow', 'reputation'];
+    return tracks.reduce((sum, track) => {
+      const filled = (pc && pc.stressFilled && pc.stressFilled[track]) ? pc.stressFilled[track].length : 0;
+      let free = 0;
+      if (Array.isArray(pc && pc.resistances)) {
+        pc.resistances.forEach((r) => {
+          if (!r || !r.name) return;
+          if (String(r.name).toLowerCase() !== track) return;
+          free += Math.max(0, parseInt(r.value, 10) || 0);
+        });
+      }
+      if (track === 'blood' && Array.isArray(pc && pc.inventory)) {
+        pc.inventory.forEach((item) => {
+          if (!item || item.type !== 'armor') return;
+          free += Math.max(0, parseInt(item.resistance, 10) || 0);
+        });
+      }
+      return sum + Math.min(10, Math.max(0, filled - free));
+    }, 0);
   }
 
   function falloutSeverityForTotalStress(total) {
@@ -5858,7 +6016,7 @@
   function setPCStressLevel(pc, track, newLevel, options = {}) {
     const triggerFallout = options.triggerFallout !== false;
     const rng = options.rng;
-    const slots = (pc.stressSlots && pc.stressSlots[track]) ? pc.stressSlots[track] : 10;
+    const slots = getTrackTotalSlots(pc, track);
     const target = Math.max(0, Math.min(slots, parseInt(newLevel, 10) || 0));
     const before = (pc.stressFilled && pc.stressFilled[track]) ? pc.stressFilled[track].length : 0;
     pc.stressFilled[track] = Array.from({ length: target }, (_, i) => i);
@@ -7709,7 +7867,7 @@
       const tracks = ['blood','mind','silver','shadow','reputation'];
       return tracks.some((t) => {
         const filled = (pc.stressFilled && pc.stressFilled[t]) ? pc.stressFilled[t].length : 0;
-        const slots = (pc.stressSlots && pc.stressSlots[t]) ? pc.stressSlots[t] : 10;
+        const slots = getTrackTotalSlots(pc, t);
         return filled >= Math.max(1, slots - 2);
       });
     }).length;
@@ -7803,7 +7961,7 @@
         const tracks = ['blood','mind','silver','shadow','reputation'];
         tracks.forEach(t => {
           const filled = (pc.stressFilled && pc.stressFilled[t]) ? pc.stressFilled[t].length : 0;
-          const slots = (pc.stressSlots && pc.stressSlots[t]) ? pc.stressSlots[t] : 10;
+          const slots = getTrackTotalSlots(pc, t);
           if (filled === 0) return;
           const pill = document.createElement('span');
           pill.className = 'stress-pill stress-pill-' + t;
@@ -9305,10 +9463,10 @@
     const bonus = Number.isFinite(resistanceValue) ? resistanceValue : 0;
     openDiceRoller(`${resistanceName} Resistance`, 1, {
       dice: [{ sides: 10, label: 'D10', color: '#9c4221' }],
-      initialDifficulty: bonus,
+      initialDifficulty: 0,
       lockDifficulty: true,
-      modifierLabel: 'Resistance bonus:',
-      helperText: `Using ${resistanceName} +${bonus}.`,
+      modifierLabel: 'Pool modifier:',
+      helperText: `${resistanceName} +${bonus} grants free stress slots, not a roll modifier.`,
       logTargetId: pcContext ? pcContext.id : ''
     });
   }
@@ -10520,16 +10678,18 @@
     camp.currentSession = (camp.currentSession || 1) + 1;
     // Reset core ability usage for all PCs
     Object.values(camp.entities).forEach(ent => {
-      if (ent.type === 'pc' && ent.coreAbilitiesState) {
+      if (ent.type !== 'pc') return;
+      if (ent.coreAbilitiesState) {
         Object.keys(ent.coreAbilitiesState).forEach(k => {
           ent.coreAbilitiesState[k] = false;
         });
       }
+      ent.refreshed = false;
     });
     appendSessionLog('─── Session ' + camp.currentSession + ' begins ───');
     const badge = document.getElementById('log-session-badge');
     if (badge) badge.textContent = 'Session ' + camp.currentSession;
-    showToast('Session ' + camp.currentSession + ' started. Core abilities reset.', 'info');
+    showToast('Session ' + camp.currentSession + ' started. Core abilities and refresh flags reset.', 'info');
     saveAndRefresh();
     renderLog();
   }

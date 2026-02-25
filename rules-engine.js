@@ -22,12 +22,24 @@
 
   function totalStressForFallout(pc) {
     const tracks = ['blood', 'mind', 'silver', 'shadow', 'reputation'];
-    let total = 0;
-    tracks.forEach(track => {
+    return tracks.reduce((total, track) => {
       const filled = (pc.stressFilled && pc.stressFilled[track]) ? pc.stressFilled[track].length : 0;
-      total += Math.min(10, filled);
-    });
-    return total;
+      let free = 0;
+      if (Array.isArray(pc.resistances)) {
+        pc.resistances.forEach((r) => {
+          if (!r || !r.name) return;
+          if (String(r.name).toLowerCase() !== track) return;
+          free += Math.max(0, parseInt(r.value, 10) || 0);
+        });
+      }
+      if (track === 'blood' && Array.isArray(pc.inventory)) {
+        pc.inventory.forEach((item) => {
+          if (!item || item.type !== 'armor') return;
+          free += Math.max(0, parseInt(item.resistance, 10) || 0);
+        });
+      }
+      return total + Math.min(10, Math.max(0, filled - free));
+    }, 0);
   }
 
   function falloutSeverityForTotalStress(total) {
