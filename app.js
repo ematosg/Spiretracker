@@ -187,6 +187,7 @@
     const npcTemplates = (raw.npcTemplates && typeof raw.npcTemplates === 'object') ? raw.npcTemplates : {};
     const clean = {
       id,
+      cloudCampaignId: '',
       name,
       source,
       enabled,
@@ -1174,10 +1175,12 @@
   }
 
   function defaultSyncConfig() {
+    const bootUrl = (window.SPIRE_SUPABASE_URL || '').trim();
+    const bootKey = (window.SPIRE_SUPABASE_ANON_KEY || '').trim();
     return {
-      transport: 'local',
-      supabaseUrl: '',
-      supabaseAnonKey: ''
+      transport: (bootUrl && bootKey) ? 'supabase' : 'local',
+      supabaseUrl: bootUrl,
+      supabaseAnonKey: bootKey
     };
   }
 
@@ -1324,7 +1327,8 @@
       const raw = localStorage.getItem('spire-users');
       state.users = raw ? (JSON.parse(raw) || {}) : {};
       const current = localStorage.getItem('spire-current-user');
-      state.currentUser = (current && state.users[current]) ? current : null;
+      const allowCloudUser = !!(current && canUseOnlineApi());
+      state.currentUser = (current && (state.users[current] || allowCloudUser)) ? current : null;
       if (!state.currentUser) localStorage.removeItem('spire-current-user');
       return true;
     } catch (e) {
@@ -1596,6 +1600,92 @@
     return !!(cfg.supabaseUrl && cfg.supabaseAnonKey && window.SpireOnlineClient && typeof window.SpireOnlineClient.init === 'function');
   }
 
+  function canUseOnlineApi() {
+    const cfg = state.syncConfig || loadSyncConfig();
+    return !!(cfg && cfg.transport === 'supabase' && cfg.supabaseUrl && cfg.supabaseAnonKey
+      && window.SpireOnlineClient && typeof window.SpireOnlineClient.init === 'function');
+  }
+
+  function initOnlineClient() {
+    if (!canUseOnlineApi()) return false;
+    try {
+      const cfg = state.syncConfig || loadSyncConfig();
+      window.SpireOnlineClient.init({
+        url: cfg.supabaseUrl,
+        anonKey: cfg.supabaseAnonKey
+      });
+      return true;
+    } catch (e) {
+      console.warn('Online client init failed', e);
+      return false;
+    }
+  }
+
+  function usernameToAuthEmail(username) {
+    const raw = String(username || '').trim().toLowerCase();
+    if (!raw) return '';
+    if (raw.includes('@')) return raw;
+    const safe = raw.replace(/[^a-z0-9._-]/g, '');
+    return `${safe || 'user'}@spire.local`;
+  }
+
+  function usernameFromOnlineUser(user, fallback = '') {
+    const metaName = user && user.user_metadata && typeof user.user_metadata.username === 'string'
+      ? user.user_metadata.username.trim()
+      : '';
+    if (metaName) return metaName;
+    const email = user && typeof user.email === 'string' ? user.email.trim() : '';
+    if (email.includes('@')) return email.split('@')[0];
+    return fallback || '';
+  }
+
+  async function syncCampaignsFromCloud() {
+    if (!state.currentUser || !canUseOnlineApi() || !initOnlineClient()) return false;
+    const rows = await window.SpireOnlineClient.listMyCampaigns();
+    const nextCampaigns = {};
+    (rows || []).forEach((row) => {
+      const remote = row && row.campaign ? row.campaign : null;
+      if (!remote || !remote.id) return;
+      const remoteData = (remote.data && typeof remote.data === 'object') ? JSON.parse(JSON.stringify(remote.data)) : {};
+      const localId = (typeof remoteData.id === 'string' && remoteData.id.trim()) ? remoteData.id.trim() : String(remote.id);
+      if (!remoteData.entities || typeof remoteData.entities !== 'object') remoteData.entities = {};
+      if (!remoteData.relationships || typeof remoteData.relationships !== 'object') remoteData.relationships = {};
+      if (!Array.isArray(remoteData.logs)) remoteData.logs = [];
+      if (!Array.isArray(remoteData.relTypes)) remoteData.relTypes = DEFAULT_REL_TYPES.slice();
+      if (!Array.isArray(remoteData.memberUsers)) remoteData.memberUsers = [];
+      if (!remoteData.memberUsers.includes(state.currentUser)) remoteData.memberUsers.push(state.currentUser);
+      if (!Array.isArray(remoteData.gmUsers)) remoteData.gmUsers = [];
+      if (row && row.role === 'gm' && !remoteData.gmUsers.includes(state.currentUser)) remoteData.gmUsers.push(state.currentUser);
+      remoteData.id = localId;
+      remoteData.cloudCampaignId = String(remote.id);
+      remoteData.name = remoteData.name || remote.name || 'Campaign';
+      if (!remoteData.owner) remoteData.owner = state.currentUser;
+      nextCampaigns[localId] = remoteData;
+    });
+    if (!Object.keys(nextCampaigns).length) return false;
+    state.campaigns = nextCampaigns;
+    if (!state.currentCampaignId || !state.campaigns[state.currentCampaignId]) {
+      state.currentCampaignId = Object.keys(state.campaigns)[0];
+    }
+    saveCampaigns({ force: true });
+    return true;
+  }
+
+  async function persistCurrentCampaignToCloud() {
+    if (!state.currentUser || !canUseOnlineApi() || !initOnlineClient()) return false;
+    const camp = currentCampaign();
+    if (!camp) return false;
+    let cloudId = camp.cloudCampaignId || '';
+    if (!cloudId) {
+      const createdId = await window.SpireOnlineClient.createCampaign(camp.name || 'New Campaign');
+      cloudId = String(createdId || '').trim();
+      if (!cloudId) throw new Error('Failed to create cloud campaign.');
+      camp.cloudCampaignId = cloudId;
+    }
+    await window.SpireOnlineClient.saveCampaignData(cloudId, camp);
+    return true;
+  }
+
   function initSupabaseRealtimeChannel() {
     if (!state.currentUser || !canUseSupabaseRealtime()) return false;
     try {
@@ -1705,6 +1795,14 @@
         actor: currentActorLabel(),
         actorRole: currentActorRole()
       });
+      if (canUseOnlineApi()) {
+        setTimeout(() => {
+          persistCurrentCampaignToCloud().catch((err) => {
+            console.warn('Cloud save failed', err);
+            setSaveState('error', 'Cloud save failed');
+          });
+        }, 0);
+      }
       setSaveState('saved');
       setSyncConflictWarning(false);
       return true;
@@ -9857,7 +9955,8 @@
     const collabLabel = document.createElement('label');
     collabLabel.textContent = 'Collaboration';
     collabField.appendChild(collabLabel);
-    const canManageCollab = !!(state.currentUser && camp.owner === state.currentUser);
+    const campGms = Array.isArray(camp.gmUsers) ? camp.gmUsers : [];
+    const canManageCollab = !!(state.currentUser && (camp.owner === state.currentUser || campGms.includes(state.currentUser)));
 
     // Pull latest members from shared invite snapshot to avoid overwriting joins.
     if (camp.inviteCode) {
@@ -9902,7 +10001,27 @@
     const genInviteBtn = document.createElement('button');
     genInviteBtn.textContent = camp.inviteCode ? 'Rotate' : 'Generate';
     genInviteBtn.disabled = !canManageCollab;
-    genInviteBtn.addEventListener('click', () => {
+    genInviteBtn.addEventListener('click', async () => {
+      if (canUseOnlineApi() && initOnlineClient()) {
+        try {
+          const cloudId = camp.cloudCampaignId || camp.id;
+          const code = await window.SpireOnlineClient.generateInviteCode(cloudId, 'player', 1, 1440);
+          const normalizedCode = String(code || '').trim().toUpperCase();
+          if (!normalizedCode) {
+            showToast('Invite generated but no code was returned.', 'warn');
+            return;
+          }
+          camp.cloudCampaignId = cloudId;
+          camp.inviteCode = normalizedCode;
+          saveCampaigns();
+          openSettingsModal();
+          showToast('Cloud invite code generated.', 'info');
+          return;
+        } catch (err) {
+          showToast(err?.message || 'Could not generate cloud invite.', 'warn');
+          return;
+        }
+      }
       camp.inviteCode = generateInviteCode();
       publishCampaignInvite(camp);
       saveCampaigns();
@@ -9918,6 +10037,14 @@
       if (!camp.inviteCode) return;
       const ok = await askConfirm('Revoke this invite code?', 'Revoke Invite');
       if (!ok) return;
+      if (canUseOnlineApi() && initOnlineClient()) {
+        try {
+          await window.SpireOnlineClient.revokeInviteCode(camp.cloudCampaignId || camp.id, camp.inviteCode);
+        } catch (err) {
+          showToast(err?.message || 'Could not revoke cloud invite.', 'warn');
+          return;
+        }
+      }
       revokeCampaignInvite(camp);
       camp.inviteCode = '';
       saveCampaigns();
@@ -9932,8 +10059,8 @@
     collabMeta.style.fontSize = '0.8rem';
     collabMeta.style.marginTop = '4px';
     collabMeta.textContent = canManageCollab
-      ? 'Share invite code with players. Owner can manage GM permissions and membership.'
-      : `Campaign owner: ${camp.owner || 'Unknown'}. Only owner can manage invite and permissions.`;
+      ? 'Share invite code with players. GMs can manage invite and membership.'
+      : `Campaign owner: ${camp.owner || 'Unknown'}. Ask a GM to generate or revoke invite codes.`;
     collabField.appendChild(collabMeta);
 
     const membersWrap = document.createElement('div');
@@ -11489,6 +11616,7 @@
     if (camp.owner && !camp.memberUsers.includes(camp.owner)) camp.memberUsers.unshift(camp.owner);
     if (camp.inviteCode === undefined) camp.inviteCode = '';
     if (camp.sourceInviteCode === undefined) camp.sourceInviteCode = '';
+    if (camp.cloudCampaignId === undefined) camp.cloudCampaignId = '';
     if (!camp.rulesProfile) camp.rulesProfile = 'Core';
     if (!camp.customRules) {
       camp.customRules = {
@@ -11625,6 +11753,40 @@
       return;
     }
 
+    if (canUseOnlineApi()) {
+      if (!initOnlineClient()) {
+        setAuthMessage('Cloud auth is configured incorrectly.', true);
+        return;
+      }
+      try {
+        const email = usernameToAuthEmail(username);
+        if (authMode === 'register') {
+          if (password !== confirm) {
+            setAuthMessage('Passwords do not match.', true);
+            return;
+          }
+          await window.SpireOnlineClient.signUp(email, password, username, 'gm');
+          await window.SpireOnlineClient.signIn(email, password);
+          const onlineUser = await window.SpireOnlineClient.currentUser();
+          state.currentUser = usernameFromOnlineUser(onlineUser, username);
+          saveUsers();
+          setAuthMessage('Cloud account created.');
+          await enterModeScreenForCurrentUser();
+          return;
+        }
+        await window.SpireOnlineClient.signIn(email, password);
+        const onlineUser = await window.SpireOnlineClient.currentUser();
+        state.currentUser = usernameFromOnlineUser(onlineUser, username);
+        saveUsers();
+        setAuthMessage('');
+        await enterModeScreenForCurrentUser();
+        return;
+      } catch (err) {
+        setAuthMessage(err?.message || 'Cloud authentication failed.', true);
+        return;
+      }
+    }
+
     if (authMode === 'register') {
       if (password !== confirm) {
         setAuthMessage('Passwords do not match.', true);
@@ -11641,7 +11803,7 @@
       state.currentUser = username;
       saveUsers();
       setAuthMessage('Account created.');
-      enterModeScreenForCurrentUser();
+      await enterModeScreenForCurrentUser();
       return;
     }
 
@@ -11658,7 +11820,7 @@
     state.currentUser = username;
     saveUsers();
     setAuthMessage('');
-    enterModeScreenForCurrentUser();
+    await enterModeScreenForCurrentUser();
   }
 
   function setupAuthScreen() {
@@ -11680,8 +11842,13 @@
     setAuthMode('login');
   }
 
-  function logoutCurrentUser() {
+  async function logoutCurrentUser() {
     saveCampaigns();
+    if (canUseOnlineApi() && initOnlineClient()) {
+      try {
+        await window.SpireOnlineClient.signOut();
+      } catch (_) {}
+    }
     closeRealtimeChannel();
     state.currentUser = null;
     state.syncConfig = defaultSyncConfig();
@@ -11699,17 +11866,24 @@
     showAuthScreen();
   }
 
-  function enterModeScreenForCurrentUser() {
+  async function enterModeScreenForCurrentUser() {
     if (state.currentUser) {
       state.syncConfig = loadSyncConfig();
       state.telemetryConfig = loadTelemetryConfig();
       initRealtimeChannel();
     }
-    loadCampaigns();
+    const loadedCloud = await syncCampaignsFromCloud().catch(() => false);
+    if (!loadedCloud) loadCampaigns();
     renderModeScreenCampaigns();
     updateModeUserRow();
     const camp = currentCampaign();
     if (camp) toggleDarkMode(!!camp.darkMode);
+    const storageNote = document.getElementById('mode-storage-note');
+    if (storageNote) {
+      storageNote.textContent = canUseOnlineApi()
+        ? 'Data sync: Supabase cloud + local cache'
+        : 'Data saved locally in your browser';
+    }
     const auth = document.getElementById('auth-screen');
     const mode = document.getElementById('mode-screen');
     const main = document.getElementById('main-app');
@@ -11815,6 +11989,19 @@
     const codeRaw = await askPrompt('Enter invite code:', '', { title: 'Join Campaign', submitText: 'Join' });
     const code = String(codeRaw || '').trim().toUpperCase();
     if (!code) return;
+    if (canUseOnlineApi() && initOnlineClient()) {
+      try {
+        await window.SpireOnlineClient.joinCampaignWithCode(code);
+        await syncCampaignsFromCloud();
+        saveCampaigns({ force: true });
+        renderModeScreenCampaigns();
+        showToast('Joined cloud campaign via invite code.', 'info');
+        return;
+      } catch (err) {
+        showToast(err?.message || 'Could not join campaign with that code.', 'warn');
+        return;
+      }
+    }
     const shared = loadSharedInvites();
     const record = shared[code];
     if (!record || !record.data || !record.data.entities || !record.data.relationships) {
@@ -11867,7 +12054,7 @@
     const logoutBtn = document.getElementById('mode-logout-user');
     if (logoutBtn) {
       logoutBtn.addEventListener('click', () => {
-        logoutCurrentUser();
+        void logoutCurrentUser();
       });
     }
 
@@ -11890,6 +12077,24 @@
     document.getElementById('mode-new-campaign').addEventListener('click', async () => {
       const name = await askPrompt('New campaign name:', '', { title: 'New Campaign', submitText: 'Create' });
       if (!name || !name.trim()) return;
+      if (canUseOnlineApi() && initOnlineClient()) {
+        try {
+          const cloudId = await window.SpireOnlineClient.createCampaign(name.trim());
+          const camp = createCampaign(name.trim());
+          camp.id = String(cloudId || camp.id);
+          camp.cloudCampaignId = camp.id;
+          state.campaigns[camp.id] = camp;
+          state.currentCampaignId = camp.id;
+          await persistCurrentCampaignToCloud();
+          saveCampaigns();
+          renderModeScreenCampaigns();
+          showToast('Cloud campaign created.', 'info');
+          return;
+        } catch (err) {
+          showToast(err?.message || 'Could not create cloud campaign.', 'warn');
+          return;
+        }
+      }
       const camp = createCampaign(name.trim());
       state.campaigns[camp.id] = camp;
       state.currentCampaignId = camp.id;
@@ -11955,18 +12160,29 @@
   /**
    * Entry point.
    */
-  function init() {
+  async function init() {
     bindGlobalErrorHandlers();
     loadUsers();
     setupAuthScreen();
     setupModeScreen();
+    if (!state.currentUser && canUseOnlineApi() && initOnlineClient()) {
+      try {
+        const onlineUser = await window.SpireOnlineClient.currentUser();
+        if (onlineUser) {
+          state.currentUser = usernameFromOnlineUser(onlineUser, '');
+          saveUsers();
+        }
+      } catch (_) {
+        // keep auth screen visible when no cloud session is available
+      }
+    }
     if (state.currentUser) {
-      enterModeScreenForCurrentUser();
+      await enterModeScreenForCurrentUser();
     } else {
       showAuthScreen();
     }
   }
 
   // Start application when DOM is ready
-  document.addEventListener('DOMContentLoaded', init);
+  document.addEventListener('DOMContentLoaded', () => { void init(); });
 })();

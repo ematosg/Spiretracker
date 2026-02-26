@@ -26,19 +26,22 @@ This guide moves the app from local-only storage to online auth + campaign shari
 - Access is checked by membership role in RLS and helper `user_campaign_role`.
 
 ## 3) Frontend Integration Checklist
-Current app is local-first. To go online, do this in `app.js`:
-1. Replace local login/register flow with Supabase auth.
-2. On account creation, pass metadata:
-- `username`
-- `account_type` (`gm` or `player`)
-3. Replace local campaign load/save with DB calls:
-- Load campaigns by membership.
-- Persist campaign JSON into `campaigns.data`.
-4. For GM:
-- Create campaign via RPC `create_campaign(name)`
-- Generate code via RPC `generate_invite_code(campaign_id, 'player', 1, 1440)`
-5. For player:
-- Join with code via RPC `join_campaign_with_code(code)`
+The app now supports Supabase cloud mode when configured.
+
+1. Set credentials in [`config.js`](/Users/ernestomatos/Downloads/files%20(9)/config.js):
+- `window.SPIRE_SUPABASE_URL`
+- `window.SPIRE_SUPABASE_ANON_KEY`
+
+2. App behavior in cloud mode:
+- Auth uses Supabase (`signUp` / `signInWithPassword`).
+- Campaign list loads from `campaign_members -> campaigns`.
+- Campaign saves update `campaigns.data`.
+- GM invite generation uses RPC `generate_invite_code`.
+- Player join uses RPC `join_campaign_with_code`.
+- Revoke invite updates `invite_codes.revoked=true`.
+
+3. Local fallback:
+- If Supabase config is missing, app falls back to local-only auth/storage.
 
 ## 4) Minimal API Calls
 ```js
@@ -72,3 +75,10 @@ await supabase.rpc('join_campaign_with_code', { p_code: code });
 - Add an "Upload local campaign to cloud" button for GM.
 - First sync: write local campaign object to `campaigns.data`.
 - Afterwards: cloud is source of truth.
+
+## 8) Deploy (Online)
+1. Push this folder to GitHub.
+2. Import the repo into Vercel (Framework preset: `Other` / static site).
+3. Set build command empty; output directory `.`.
+4. Add a `config.js` in deployed root with your Supabase URL/key values.
+5. Open the deployed URL and register/login.
