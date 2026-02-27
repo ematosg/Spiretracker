@@ -1194,13 +1194,20 @@
 
   function loadSyncConfig() {
     try {
+      const bootCfg = defaultSyncConfig();
       const raw = localStorage.getItem(syncConfigStorageKey());
-      if (!raw) return defaultSyncConfig();
+      if (!raw) return bootCfg;
       const parsed = JSON.parse(raw) || {};
       const cfg = defaultSyncConfig();
       if (parsed.transport === 'supabase') cfg.transport = 'supabase';
+      if (parsed.transport === 'local') cfg.transport = 'local';
       if (typeof parsed.supabaseUrl === 'string') cfg.supabaseUrl = parsed.supabaseUrl.trim();
       if (typeof parsed.supabaseAnonKey === 'string') cfg.supabaseAnonKey = parsed.supabaseAnonKey.trim();
+      if (!cfg.supabaseUrl && bootCfg.supabaseUrl) cfg.supabaseUrl = bootCfg.supabaseUrl;
+      if (!cfg.supabaseAnonKey && bootCfg.supabaseAnonKey) cfg.supabaseAnonKey = bootCfg.supabaseAnonKey;
+      // If runtime keys exist, prefer cloud transport by default so invite
+      // joins don't silently fall back to local-only behavior.
+      if (cfg.supabaseUrl && cfg.supabaseAnonKey) cfg.transport = 'supabase';
       return cfg;
     } catch (_) {
       return defaultSyncConfig();
@@ -12005,7 +12012,13 @@
     const shared = loadSharedInvites();
     const record = shared[code];
     if (!record || !record.data || !record.data.entities || !record.data.relationships) {
-      showToast('Invite code not found.', 'warn');
+      const hasRuntimeCloudKeys = !!((window.SPIRE_SUPABASE_URL || '').trim() && (window.SPIRE_SUPABASE_ANON_KEY || '').trim());
+      showToast(
+        hasRuntimeCloudKeys
+          ? 'Invite code not found in local mode. Reload and ensure cloud sync is enabled.'
+          : 'Invite code not found.',
+        'warn'
+      );
       return;
     }
     const existing = Object.values(state.campaigns).find((c) => String(c.sourceInviteCode || '').toUpperCase() === code);
