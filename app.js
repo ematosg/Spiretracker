@@ -249,6 +249,130 @@
     return JSON.parse(JSON.stringify(FALLOUT_GUIDANCE));
   }
 
+  function defaultSourcebooks() {
+    return {
+      'Core Book': true,
+      'Strata': false,
+      'Sin': false,
+      "Magister's Guide": false,
+      'Black Magic': false
+    };
+  }
+
+  function normalizeSourceLabel(source) {
+    const raw = String(source || '').trim();
+    return raw || 'Core Book';
+  }
+
+  function isSourceEnabled(camp, source) {
+    const src = normalizeSourceLabel(source);
+    const books = (camp && camp.sourcebooks) ? camp.sourcebooks : defaultSourcebooks();
+    if (books[src] === undefined) return src === 'Core Book';
+    return !!books[src];
+  }
+
+  function defaultRefreshCompendium() {
+    return Object.entries(CLASS_EFFECTS).map(([klass, eff]) => ({
+      id: generateId('refreshComp'),
+      class: klass,
+      refresh: String(eff && eff.refresh ? eff.refresh : '').trim(),
+      source: 'Core Book',
+      enabled: true
+    }));
+  }
+
+  function defaultFalloutCompendium() {
+    const out = [];
+    Object.entries(FALLOUT_GUIDANCE).forEach(([track, severities]) => {
+      Object.entries(severities || {}).forEach(([severity, prompts]) => {
+        (prompts || []).forEach((prompt) => {
+          out.push({
+            id: generateId('falloutComp'),
+            name: String(prompt || '').trim(),
+            severity,
+            track,
+            description: '',
+            source: 'Core Book',
+            enabled: true
+          });
+        });
+      });
+    });
+    return out;
+  }
+
+  function defaultEquipmentCompendium() {
+    const items = [];
+    Object.values(CLASS_EFFECTS).forEach((eff) => {
+      (eff.inventoryOptions || []).forEach((opt) => {
+        (opt.items || []).forEach((item) => {
+          items.push({
+            name: item.item || '',
+            type: item.type || 'other',
+            stress: item.stress || '',
+            resistance: item.resistance ?? '',
+            tags: Array.isArray(item.tags) ? item.tags.join(', ') : '',
+            text: '',
+            source: 'Core Book'
+          });
+        });
+      });
+    });
+    Object.values(NPC_TEMPLATES).forEach((tpl) => {
+      (tpl.inventory || []).forEach((item) => {
+        items.push({
+          name: item.item || '',
+          type: item.type || 'other',
+          stress: item.stress || '',
+          resistance: item.resistance ?? '',
+          tags: Array.isArray(item.tags) ? item.tags.join(', ') : '',
+          text: '',
+          source: 'Core Book'
+        });
+      });
+    });
+    const seen = new Set();
+    return items
+      .filter((item) => item.name)
+      .filter((item) => {
+        const key = [
+          item.name.toLowerCase(),
+          String(item.type || '').toLowerCase(),
+          String(item.stress || '').toLowerCase(),
+          String(item.resistance || ''),
+          String(item.tags || '').toLowerCase()
+        ].join('|');
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .map((item) => ({
+        id: generateId('equipComp'),
+        name: item.name,
+        type: item.type,
+        stress: item.stress,
+        resistance: item.resistance,
+        tags: item.tags,
+        text: item.text,
+        source: item.source,
+        enabled: true
+      }));
+  }
+
+  function getRefreshTextForClass(pcClass, camp = currentCampaign()) {
+    if (!pcClass) return '';
+    const list = Array.isArray(camp && camp.refreshCompendium) ? camp.refreshCompendium : [];
+    const match = list.find((entry) =>
+      entry &&
+      entry.enabled !== false &&
+      String(entry.class || '').toLowerCase() === String(pcClass).toLowerCase() &&
+      isSourceEnabled(camp, entry.source)
+    );
+    if (match && match.refresh) return match.refresh;
+    const base = CLASS_EFFECTS[pcClass];
+    return base && base.refresh ? base.refresh : '';
+  }
+
   // Durance options for characters. Each option modifies the character
   // by granting skills, domains or resistance bonuses. The format is
   // { skills: [ ... ], domains: [ ... ], resistances: [ {name,value} ] }.
@@ -826,7 +950,11 @@
         falloutCheckOnStress: true,
         clearStressOnFallout: true
       },
+      sourcebooks: defaultSourcebooks(),
       falloutGuidance: defaultFalloutGuidance(),
+      refreshCompendium: defaultRefreshCompendium(),
+      falloutCompendium: defaultFalloutCompendium(),
+      equipmentCompendium: defaultEquipmentCompendium(),
       graphViews: {},
       sectionCollapse: {},    // persistent collapse state per entity+section
       taskViewByPc: {},
@@ -3353,7 +3481,7 @@
       const refreshDiv = document.createElement('div');
       refreshDiv.className = 'class-refresh' + (pc.refreshed ? ' refreshed' : '');
       const refreshLabel = document.createElement('span');
-      refreshLabel.innerHTML = `<strong>Refresh:</strong> ${escapeHtml(classEff.refresh)}`;
+      refreshLabel.innerHTML = `<strong>Refresh:</strong> ${escapeHtml(getRefreshTextForClass(pc.class) || classEff.refresh || '')}`;
       const refreshChk = document.createElement('button');
       refreshChk.className = 'refresh-toggle-btn' + (pc.refreshed ? ' active' : '');
       refreshChk.textContent = pc.refreshed ? '✓ Refreshed' : 'Mark Refreshed';
@@ -4931,6 +5059,14 @@
     wrap.appendChild(intro);
 
     const camp = currentCampaign();
+    const compEntries = Array.isArray(camp && camp.falloutCompendium)
+      ? camp.falloutCompendium.filter((entry) =>
+          entry &&
+          entry.enabled !== false &&
+          isSourceEnabled(camp, entry.source) &&
+          String(entry.track || '').toLowerCase() === String(track || '').toLowerCase()
+        )
+      : [];
     const guidance = (camp && camp.falloutGuidance) ? camp.falloutGuidance : defaultFalloutGuidance();
     const table = guidance[track] || guidance.Blood || defaultFalloutGuidance().Blood;
     ['Minor', 'Moderate', 'Severe'].forEach((level) => {
@@ -4941,7 +5077,13 @@
       block.appendChild(header);
       const ul = document.createElement('ul');
       ul.className = 'fallout-lookup-list';
-      (table[level] || []).forEach((item) => {
+      const compLevelItems = compEntries
+        .filter((entry) => String(entry.severity || '').toLowerCase() === level.toLowerCase())
+        .map((entry) => entry.description
+          ? `${entry.name || 'Fallout'} — ${entry.description}`
+          : (entry.name || 'Fallout'));
+      const items = compLevelItems.length ? compLevelItems : (table[level] || []);
+      items.forEach((item) => {
         const li = document.createElement('li');
         li.textContent = item;
         ul.appendChild(li);
@@ -6186,6 +6328,7 @@
     if (forceMessagesRender || activeTab === 'messages-view') renderMessages();
     if (activeTab === 'log-view') renderLog();
     if (activeTab === 'gm-notes-view') renderGMNotes();
+    if (activeTab === 'compendium-view') renderCompendium();
     const sidebarAfter = document.getElementById('sidebar');
     if (sidebarAfter) sidebarAfter.scrollTop = preservedScrolls.sidebar;
     const logAfter = document.getElementById('log-list');
@@ -9155,6 +9298,291 @@
     ensureAutoGrowTextareas(board);
   }
 
+  function renderCompendium() {
+    const host = document.getElementById('compendium-container');
+    if (!host) return;
+    const page = document.getElementById('compendium-view');
+    if (!state.gmMode) {
+      if (page) page.classList.remove('active');
+      host.innerHTML = '<div class="messages-empty">Compendium is visible to GMs only.</div>';
+      return;
+    }
+    const camp = currentCampaign();
+    if (!camp) return;
+    if (!camp.sourcebooks || typeof camp.sourcebooks !== 'object') camp.sourcebooks = defaultSourcebooks();
+    if (!Array.isArray(camp.refreshCompendium)) camp.refreshCompendium = defaultRefreshCompendium();
+    if (!Array.isArray(camp.falloutCompendium)) camp.falloutCompendium = defaultFalloutCompendium();
+    if (!Array.isArray(camp.equipmentCompendium)) camp.equipmentCompendium = defaultEquipmentCompendium();
+    host.innerHTML = '';
+
+    const sourcesSec = document.createElement('section');
+    sourcesSec.className = 'prep-section';
+    sourcesSec.innerHTML = '<strong>Rule Engine Sourcebooks</strong>';
+    const srcHint = document.createElement('div');
+    srcHint.className = 'text-muted';
+    srcHint.style.fontSize = '0.82rem';
+    srcHint.style.margin = '6px 0';
+    srcHint.textContent = 'Enable/disable content packs. Compendium entries tied to disabled sources are ignored.';
+    sourcesSec.appendChild(srcHint);
+    const srcRow = document.createElement('div');
+    srcRow.style.display = 'flex';
+    srcRow.style.flexWrap = 'wrap';
+    srcRow.style.gap = '8px';
+    Object.keys(defaultSourcebooks()).forEach((source) => {
+      const lbl = document.createElement('label');
+      lbl.className = 'sidebar-pin-only-row';
+      const chk = document.createElement('input');
+      chk.type = 'checkbox';
+      chk.checked = camp.sourcebooks[source] !== false;
+      chk.addEventListener('change', (e) => {
+        camp.sourcebooks[source] = !!e.target.checked;
+        appendLog('Updated sourcebook toggle', '');
+        saveAndRefresh();
+      });
+      const text = document.createElement('span');
+      text.textContent = source;
+      lbl.appendChild(chk);
+      lbl.appendChild(text);
+      srcRow.appendChild(lbl);
+    });
+    sourcesSec.appendChild(srcRow);
+    host.appendChild(sourcesSec);
+
+    const refreshSec = document.createElement('section');
+    refreshSec.className = 'prep-section';
+    refreshSec.innerHTML = '<strong>Refreshes Database</strong>';
+    const refreshList = document.createElement('div');
+    refreshList.style.display = 'grid';
+    refreshList.style.gap = '6px';
+    camp.refreshCompendium.forEach((entry) => {
+      const row = document.createElement('div');
+      row.className = 'sync-queue-row';
+      const classIn = document.createElement('input');
+      classIn.type = 'text';
+      classIn.value = entry.class || '';
+      classIn.placeholder = 'Class';
+      classIn.addEventListener('change', (e) => { entry.class = e.target.value.trim(); saveWithoutRefresh(); });
+      const textIn = document.createElement('input');
+      textIn.type = 'text';
+      textIn.value = entry.refresh || '';
+      textIn.placeholder = 'Refresh text';
+      textIn.style.flex = '1';
+      textIn.addEventListener('change', (e) => { entry.refresh = e.target.value.trim(); saveWithoutRefresh(); });
+      const srcIn = document.createElement('input');
+      srcIn.type = 'text';
+      srcIn.value = entry.source || 'Core Book';
+      srcIn.placeholder = 'Source';
+      srcIn.addEventListener('change', (e) => { entry.source = normalizeSourceLabel(e.target.value); saveWithoutRefresh(); });
+      const enabledChk = document.createElement('input');
+      enabledChk.type = 'checkbox';
+      enabledChk.checked = entry.enabled !== false;
+      enabledChk.title = 'Enabled';
+      enabledChk.addEventListener('change', (e) => { entry.enabled = !!e.target.checked; saveWithoutRefresh(); });
+      const delBtn = document.createElement('button');
+      delBtn.className = 'row-remove-btn';
+      delBtn.textContent = '×';
+      delBtn.addEventListener('click', () => {
+        camp.refreshCompendium = camp.refreshCompendium.filter((x) => x.id !== entry.id);
+        appendLog('Removed refresh entry', '');
+        saveAndRefresh();
+      });
+      row.appendChild(enabledChk);
+      row.appendChild(classIn);
+      row.appendChild(textIn);
+      row.appendChild(srcIn);
+      row.appendChild(delBtn);
+      refreshList.appendChild(row);
+    });
+    const addRefreshBtn = document.createElement('button');
+    addRefreshBtn.className = 'toolbar-btn';
+    addRefreshBtn.textContent = 'Add Refresh Entry';
+    addRefreshBtn.addEventListener('click', () => {
+      camp.refreshCompendium.push({
+        id: generateId('refreshComp'),
+        class: '',
+        refresh: '',
+        source: 'Core Book',
+        enabled: true
+      });
+      appendLog('Added refresh entry', '');
+      saveAndRefresh();
+    });
+    refreshSec.appendChild(refreshList);
+    refreshSec.appendChild(addRefreshBtn);
+    host.appendChild(refreshSec);
+
+    const falloutSec = document.createElement('section');
+    falloutSec.className = 'prep-section';
+    falloutSec.innerHTML = '<strong>Fallout Database</strong>';
+    const falloutList = document.createElement('div');
+    falloutList.style.display = 'grid';
+    falloutList.style.gap = '6px';
+    camp.falloutCompendium.forEach((entry) => {
+      const row = document.createElement('div');
+      row.className = 'sync-queue-row';
+      const enabledChk = document.createElement('input');
+      enabledChk.type = 'checkbox';
+      enabledChk.checked = entry.enabled !== false;
+      enabledChk.addEventListener('change', (e) => { entry.enabled = !!e.target.checked; saveWithoutRefresh(); });
+      const nameIn = document.createElement('input');
+      nameIn.type = 'text';
+      nameIn.placeholder = 'Name';
+      nameIn.value = entry.name || '';
+      nameIn.addEventListener('change', (e) => { entry.name = e.target.value.trim(); saveWithoutRefresh(); });
+      const sevSel = document.createElement('select');
+      ['Minor', 'Moderate', 'Severe'].forEach((optVal) => {
+        const opt = document.createElement('option');
+        opt.value = optVal;
+        opt.textContent = optVal;
+        if (String(entry.severity || '').toLowerCase() === optVal.toLowerCase()) opt.selected = true;
+        sevSel.appendChild(opt);
+      });
+      sevSel.addEventListener('change', (e) => { entry.severity = e.target.value; saveWithoutRefresh(); });
+      const trackSel = document.createElement('select');
+      ['Blood', 'Mind', 'Silver', 'Shadow', 'Reputation'].forEach((optVal) => {
+        const opt = document.createElement('option');
+        opt.value = optVal;
+        opt.textContent = optVal;
+        if (String(entry.track || '').toLowerCase() === optVal.toLowerCase()) opt.selected = true;
+        trackSel.appendChild(opt);
+      });
+      trackSel.addEventListener('change', (e) => { entry.track = e.target.value; saveWithoutRefresh(); });
+      const srcIn = document.createElement('input');
+      srcIn.type = 'text';
+      srcIn.placeholder = 'Source';
+      srcIn.value = entry.source || 'Core Book';
+      srcIn.addEventListener('change', (e) => { entry.source = normalizeSourceLabel(e.target.value); saveWithoutRefresh(); });
+      const descIn = document.createElement('input');
+      descIn.type = 'text';
+      descIn.placeholder = 'Description';
+      descIn.value = entry.description || '';
+      descIn.style.flex = '1';
+      descIn.addEventListener('change', (e) => { entry.description = e.target.value.trim(); saveWithoutRefresh(); });
+      const delBtn = document.createElement('button');
+      delBtn.className = 'row-remove-btn';
+      delBtn.textContent = '×';
+      delBtn.addEventListener('click', () => {
+        camp.falloutCompendium = camp.falloutCompendium.filter((x) => x.id !== entry.id);
+        appendLog('Removed fallout database entry', '');
+        saveAndRefresh();
+      });
+      row.appendChild(enabledChk);
+      row.appendChild(nameIn);
+      row.appendChild(sevSel);
+      row.appendChild(trackSel);
+      row.appendChild(descIn);
+      row.appendChild(srcIn);
+      row.appendChild(delBtn);
+      falloutList.appendChild(row);
+    });
+    const addFalloutBtn = document.createElement('button');
+    addFalloutBtn.className = 'toolbar-btn';
+    addFalloutBtn.textContent = 'Add Fallout Entry';
+    addFalloutBtn.addEventListener('click', () => {
+      camp.falloutCompendium.push({
+        id: generateId('falloutComp'),
+        name: '',
+        severity: 'Minor',
+        track: 'Blood',
+        description: '',
+        source: 'Core Book',
+        enabled: true
+      });
+      appendLog('Added fallout database entry', '');
+      saveAndRefresh();
+    });
+    falloutSec.appendChild(falloutList);
+    falloutSec.appendChild(addFalloutBtn);
+    host.appendChild(falloutSec);
+
+    const equipSec = document.createElement('section');
+    equipSec.className = 'prep-section';
+    equipSec.innerHTML = '<strong>Equipment Compendium</strong>';
+    const equipList = document.createElement('div');
+    equipList.style.display = 'grid';
+    equipList.style.gap = '6px';
+    camp.equipmentCompendium.forEach((entry) => {
+      const row = document.createElement('div');
+      row.className = 'sync-queue-row';
+      const enabledChk = document.createElement('input');
+      enabledChk.type = 'checkbox';
+      enabledChk.checked = entry.enabled !== false;
+      enabledChk.addEventListener('change', (e) => { entry.enabled = !!e.target.checked; saveWithoutRefresh(); });
+      const nameIn = document.createElement('input');
+      nameIn.type = 'text';
+      nameIn.placeholder = 'Name';
+      nameIn.value = entry.name || '';
+      nameIn.addEventListener('change', (e) => { entry.name = e.target.value.trim(); saveWithoutRefresh(); });
+      const typeSel = document.createElement('select');
+      ['weapon', 'armor', 'other'].forEach((typeVal) => {
+        const opt = document.createElement('option');
+        opt.value = typeVal;
+        opt.textContent = typeVal;
+        if (String(entry.type || '').toLowerCase() === typeVal) opt.selected = true;
+        typeSel.appendChild(opt);
+      });
+      typeSel.addEventListener('change', (e) => { entry.type = e.target.value; saveWithoutRefresh(); });
+      const stressIn = document.createElement('input');
+      stressIn.type = 'text';
+      stressIn.placeholder = 'Stress';
+      stressIn.value = entry.stress || '';
+      stressIn.addEventListener('change', (e) => { entry.stress = e.target.value.trim(); saveWithoutRefresh(); });
+      const resistIn = document.createElement('input');
+      resistIn.type = 'text';
+      resistIn.placeholder = 'Resistance';
+      resistIn.value = entry.resistance === undefined ? '' : String(entry.resistance);
+      resistIn.addEventListener('change', (e) => { entry.resistance = e.target.value.trim(); saveWithoutRefresh(); });
+      const tagsIn = document.createElement('input');
+      tagsIn.type = 'text';
+      tagsIn.placeholder = 'Tags';
+      tagsIn.value = entry.tags || '';
+      tagsIn.addEventListener('change', (e) => { entry.tags = e.target.value.trim(); saveWithoutRefresh(); });
+      const srcIn = document.createElement('input');
+      srcIn.type = 'text';
+      srcIn.placeholder = 'Source';
+      srcIn.value = entry.source || 'Core Book';
+      srcIn.addEventListener('change', (e) => { entry.source = normalizeSourceLabel(e.target.value); saveWithoutRefresh(); });
+      const delBtn = document.createElement('button');
+      delBtn.className = 'row-remove-btn';
+      delBtn.textContent = '×';
+      delBtn.addEventListener('click', () => {
+        camp.equipmentCompendium = camp.equipmentCompendium.filter((x) => x.id !== entry.id);
+        appendLog('Removed equipment compendium entry', '');
+        saveAndRefresh();
+      });
+      row.appendChild(enabledChk);
+      row.appendChild(nameIn);
+      row.appendChild(typeSel);
+      row.appendChild(stressIn);
+      row.appendChild(resistIn);
+      row.appendChild(tagsIn);
+      row.appendChild(srcIn);
+      row.appendChild(delBtn);
+      equipList.appendChild(row);
+    });
+    const addEquipBtn = document.createElement('button');
+    addEquipBtn.className = 'toolbar-btn';
+    addEquipBtn.textContent = 'Add Equipment Entry';
+    addEquipBtn.addEventListener('click', () => {
+      camp.equipmentCompendium.push({
+        id: generateId('equipComp'),
+        name: '',
+        type: 'other',
+        stress: '',
+        resistance: '',
+        tags: '',
+        text: '',
+        source: 'Core Book',
+        enabled: true
+      });
+      appendLog('Added equipment compendium entry', '');
+      saveAndRefresh();
+    });
+    equipSec.appendChild(equipList);
+    equipSec.appendChild(addEquipBtn);
+    host.appendChild(equipSec);
+  }
+
   /**
    * Perform a JSON export of the current campaign. If gmExport is
    * false, strip GM-only entities, secret edges and GM notes.
@@ -11544,6 +11972,9 @@
         if (target === 'gm-notes-view') {
           renderGMNotes();
         }
+        if (target === 'compendium-view') {
+          renderCompendium();
+        }
         // Auto-dismiss inspector when leaving web view
         if (target !== 'web-view') {
           document.getElementById('inspector').classList.add('hidden');
@@ -11607,6 +12038,7 @@
     renderLog();
     renderMessages();
     renderGMNotes();
+    renderCompendium();
     renderSessionPrep();
     updatePendingBadge();
     updatePlayerPCButtonState();
@@ -11632,7 +12064,14 @@
         clearStressOnFallout: true
       };
     }
+    if (!camp.sourcebooks || typeof camp.sourcebooks !== 'object') camp.sourcebooks = defaultSourcebooks();
+    Object.entries(defaultSourcebooks()).forEach(([key, val]) => {
+      if (camp.sourcebooks[key] === undefined) camp.sourcebooks[key] = val;
+    });
     if (!camp.falloutGuidance) camp.falloutGuidance = defaultFalloutGuidance();
+    if (!Array.isArray(camp.refreshCompendium)) camp.refreshCompendium = defaultRefreshCompendium();
+    if (!Array.isArray(camp.falloutCompendium)) camp.falloutCompendium = defaultFalloutCompendium();
+    if (!Array.isArray(camp.equipmentCompendium)) camp.equipmentCompendium = defaultEquipmentCompendium();
     if (!camp.graphViews) camp.graphViews = {};
     if (!camp.sectionCollapse) camp.sectionCollapse = {};
     if (!camp.taskViewByPc || typeof camp.taskViewByPc !== 'object') camp.taskViewByPc = {};
@@ -11682,18 +12121,26 @@
     const filterBar = document.getElementById('web-filter-bar');
     const gmNotesTab = document.querySelector('.tab-link[data-tab="gm-notes-view"]');
     const gmNotesPage = document.getElementById('gm-notes-view');
+    const compendiumTab = document.querySelector('.tab-link[data-tab="compendium-view"]');
+    const compendiumPage = document.getElementById('compendium-view');
     // Keep GM-only filter controls hidden for players, but allow players
     // to access the web tab itself (player-safe filtering already applies).
     if (!state.gmMode) {
       if (filterBar) filterBar.style.display = 'none';
       if (gmNotesTab) gmNotesTab.style.display = 'none';
+      if (compendiumTab) compendiumTab.style.display = 'none';
       if (gmNotesPage && gmNotesPage.classList.contains('active')) {
+        const sheetsTab = document.querySelector('.tab-link[data-tab="sheets-view"]');
+        if (sheetsTab) sheetsTab.click();
+      }
+      if (compendiumPage && compendiumPage.classList.contains('active')) {
         const sheetsTab = document.querySelector('.tab-link[data-tab="sheets-view"]');
         if (sheetsTab) sheetsTab.click();
       }
     } else {
       if (filterBar) filterBar.style.display = '';
       if (gmNotesTab) gmNotesTab.style.display = '';
+      if (compendiumTab) compendiumTab.style.display = '';
     }
     updatePlayerPCButtonState();
     updateFocusToggleUI();

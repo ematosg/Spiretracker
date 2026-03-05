@@ -121,6 +121,10 @@
             <span class="material-icons tab-icon">sticky_note_2</span>
             <span class="tab-label">GM Notes</span>
           </button>
+          <button class="tab-link gm-only-tab" data-tab="compendium-view">
+            <span class="material-icons tab-icon">menu_book</span>
+            <span class="tab-label">Compendium</span>
+          </button>
         </div>
         <div class="nav-right">
           <span id="save-state-indicator" class="save-state-indicator" aria-live="polite">Saved</span>
@@ -400,6 +404,14 @@
               </div>
             </div>
             <div id="gm-notes-board" class="gm-notes-board"></div>
+          </div>
+
+          <!-- Compendium view -->
+          <div id="compendium-view" class="tab-page">
+            <div id="compendium-toolbar">
+              <span class="log-title">Rules Compendium</span>
+            </div>
+            <div id="compendium-container" class="session-prep-panel"></div>
           </div>
         </main>
 
